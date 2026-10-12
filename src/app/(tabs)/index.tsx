@@ -36,6 +36,7 @@ import SwingCapture, {
   type MotionEvent,
   type NormalizedRect,
   type SoundEvent,
+  type WatchStatusEvent,
 } from '../../../modules/swing-capture';
 
 function captureConfig(s: CaptureSettings): CaptureConfig {
@@ -49,6 +50,8 @@ function captureConfig(s: CaptureSettings): CaptureConfig {
     sharpMode: s.sharpMode,
     autoTrigger: true,
     impactTrigger: s.soundTrigger,
+    watchMode: s.watchMode,
+    savePracticeSwings: s.savePracticeSwings,
   };
 }
 
@@ -72,6 +75,7 @@ const SOUND_OUTCOME: Record<NonNullable<SoundEvent['reason']> | 'saved', string>
   off: 'Auto off',
   touch: 'ignored, phone touched',
   still: 'ignored, no swing in box',
+  wrist: 'ignored, no wrist swing',
   busy: 'ignored, busy',
 };
 
@@ -79,7 +83,7 @@ function describeSound(e: SoundEvent) {
   const outcome = SOUND_OUTCOME[e.accepted ? 'saved' : (e.reason ?? 'busy')];
   const swing =
     e.motionPeak != null && e.motionThreshold != null
-      ? `, swing ${e.motionPeak.toFixed(1)}/${e.motionThreshold.toFixed(1)}`
+      ? `, swing ${e.motionPeak.toFixed(1)}%/${e.motionThreshold.toFixed(1)}%`
       : '';
   return `Last sound ${Math.round(e.levelDb)} dB (needs ${Math.round(e.minLevelDb)})${swing} · ${outcome}`;
 }
@@ -139,6 +143,8 @@ function Recorder() {
   const [lastSound, setLastSound] = useState<SoundEvent | null>(null);
   const [motion, setMotion] = useState<MotionEvent | null>(null);
   const [exposure, setExposure] = useState<ExposureEvent | null>(null);
+  const [watch, setWatch] = useState<WatchStatusEvent>({ connected: false, sensing: false });
+  const [lastWristDps, setLastWristDps] = useState<number | null>(null);
   const [viewLayout, setViewLayout] = useState<LayoutRectangle | null>(null);
   // Screen y where the top controls end and the bottom bar starts; the golfer box stays between.
   const [topControlsBottom, setTopControlsBottom] = useState(0);
@@ -224,6 +230,11 @@ function Recorder() {
         }
       }),
       SwingCapture.addListener('onExposure', setExposure),
+      SwingCapture.addListener('onWatchStatus', setWatch),
+      SwingCapture.addListener('onWristSwing', (e) => {
+        setLastWristDps(e.peakDps);
+        markActive();
+      }),
       SwingCapture.addListener('onThermalDowngrade', (e) =>
         setError(`Phone is hot, dropped from ${e.fromFps} to ${e.toFps} fps`)
       ),
@@ -392,6 +403,7 @@ function Recorder() {
             style={styles.pill}>
             <View style={[styles.dot, { backgroundColor: statusColor }]} />
             <ThemedText style={styles.pillText}>{clip ? 'Replay · ¼ speed' : statusLabel}</ThemedText>
+            {watch.sensing && !clip && <ThemedText style={styles.watchBadge}>⌚</ThemedText>}
           </Pressable>
           <Pressable
             accessibilityRole="button"
@@ -421,6 +433,13 @@ function Recorder() {
                 {`Camera ${format.height}×${format.width} @ ${format.fps} fps${format.highSpeed ? ' (high-speed)' : ''}`}
               </ThemedText>
             )}
+            <ThemedText type="small" style={styles.levelText}>
+              {!watch.connected
+                ? 'Watch: not connected'
+                : watch.sensing
+                  ? `Watch: sensing swings${lastWristDps ? ` · last ${lastWristDps}°/s` : ''}`
+                  : 'Watch: connected (tap to save)'}
+            </ThemedText>
             {exposure && (
               <ThemedText type="small" style={styles.levelText}>
                 {`Shutter ${formatShutter(exposure.shutterSec)}${exposure.iso ? ` · ISO ${exposure.iso}` : ''}${
@@ -430,7 +449,7 @@ function Recorder() {
             )}
             <ThemedText type="small" style={styles.levelText}>
               {motion
-                ? `Movement in box ${motion.level.toFixed(1)} (swing needs ${motion.threshold.toFixed(1)})`
+                ? `Movement in box ${motion.level.toFixed(1)}% (swing needs ${motion.threshold.toFixed(1)}%)`
                 : 'Movement in box: measuring…'}
             </ThemedText>
             <ThemedText type="small" style={styles.levelText}>
@@ -538,6 +557,7 @@ const styles = StyleSheet.create({
   },
   dot: { width: 10, height: 10, borderRadius: 5 },
   pillText: { color: '#fff', fontWeight: '600', fontSize: 15, lineHeight: 20 },
+  watchBadge: { color: '#3DCB7A', fontSize: 14, lineHeight: 20 },
   helpButton: {
     width: 36,
     height: 36,

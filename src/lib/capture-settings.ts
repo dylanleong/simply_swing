@@ -1,4 +1,4 @@
-import type { NormalizedRect } from '../../modules/swing-capture/src/SwingCapture.types';
+import type { NormalizedRect, WatchMode } from '../../modules/swing-capture/src/SwingCapture.types';
 
 export type Sensitivity = 'low' | 'medium' | 'high';
 
@@ -26,6 +26,10 @@ export type CaptureSettings = {
   dimScreen: boolean;
   /** Low-power camera standby when nobody has been in the golfer box for a while. */
   autoStandby: boolean;
+  /** How the watch is used (see WatchMode). */
+  watchMode: WatchMode;
+  /** With the watch sensing, also save swings without an impact sound. */
+  savePracticeSwings: boolean;
 };
 
 export const FPS_OPTIONS = [60, 120, 240] as const;
@@ -33,6 +37,7 @@ export const PRE_ROLL_OPTIONS = [2, 3, 4] as const;
 export const LOOKBACK_OPTIONS = [4, 6, 8] as const;
 export const SENSITIVITY_OPTIONS = ['low', 'medium', 'high'] as const;
 export const AUTO_DELETE_OPTIONS = [0, 7, 30] as const;
+export const WATCH_MODE_OPTIONS = ['auto', 'tap', 'off'] as const;
 
 /** Detector sensitivity (0..1) for each user-facing level. */
 export const SENSITIVITY_VALUE: Record<Sensitivity, number> = { low: 0.2, medium: 0.5, high: 0.8 };
@@ -55,6 +60,8 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   autoDeleteDays: 0,
   dimScreen: true,
   autoStandby: true,
+  watchMode: 'auto',
+  savePracticeSwings: false,
 };
 
 /** Smallest golfer box, as a fraction of the preview on each axis. */
@@ -116,5 +123,7 @@ export function parseSettings(json: string | null): CaptureSettings {
     autoDeleteDays: oneOf(AUTO_DELETE_OPTIONS, raw.autoDeleteDays, d.autoDeleteDays),
     dimScreen: bool(raw.dimScreen, d.dimScreen),
     autoStandby: bool(raw.autoStandby, d.autoStandby),
+    watchMode: oneOf(WATCH_MODE_OPTIONS, raw.watchMode, d.watchMode),
+    savePracticeSwings: bool(raw.savePracticeSwings, d.savePracticeSwings),
   };
 }

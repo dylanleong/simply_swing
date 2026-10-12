@@ -8,7 +8,18 @@ public class SwingCaptureModule: Module, CaptureEngineListener {
   public func definition() -> ModuleDefinition {
     Name("SwingCapture")
 
-    Events("onStateChange", "onTrigger", "onClipReady", "onSound", "onMotion", "onExposure", "onThermalDowngrade", "onError")
+    Events(
+      "onStateChange",
+      "onTrigger",
+      "onClipReady",
+      "onSound",
+      "onMotion",
+      "onExposure",
+      "onWatchStatus",
+      "onWristSwing",
+      "onThermalDowngrade",
+      "onError"
+    )
 
     OnCreate {
       CaptureEngine.shared.listener = self

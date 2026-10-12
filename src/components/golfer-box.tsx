@@ -99,7 +99,7 @@ export function GolferBox({ frame, bounds, roi, onChange, active, activeColor }:
         <Animated.View
           accessibilityLabel="Golfer box. Drag to move."
           style={[styles.box, active && { borderColor: activeColor }, boxStyle]}>
-          <Text style={styles.label}>Golfer box</Text>
+          <Text style={[styles.label, active && { color: activeColor }]}>{active ? 'Swing seen' : 'Golfer box'}</Text>
         </Animated.View>
       </GestureDetector>
       {(

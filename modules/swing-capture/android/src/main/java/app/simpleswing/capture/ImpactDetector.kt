@@ -32,10 +32,12 @@ class ImpactDetector(
   private val marginDb = 30.0 - 15.0 * sensitivity.coerceIn(0.0, 1.0)
   private val riseDb = 12.0
   /**
-   * Absolute loudness a strike must reach (dBFS, 5 ms hop energy). In a quiet room the relative
-   * margin alone lets screen taps and handling noise through; a ball struck 2-3 m away is far louder.
+   * Absolute loudness a strike must reach (dBFS, 5 ms hop energy): -24 / -32 / -40 dB at low /
+   * medium / high. In a quiet room the relative margin alone lets screen taps and handling noise
+   * through. Kept moderate because the golfer-box motion gate also has to pass (field test: claps at
+   * 3 m read -31 to -45 dB; a struck ball is ~15-20 dB louder).
    */
-  val minLevelDb = -20.0 - 15.0 * sensitivity.coerceIn(0.0, 1.0)
+  val minLevelDb = -24.0 - 16.0 * sensitivity.coerceIn(0.0, 1.0)
   private val refractoryUs = 1_000_000L
 
   private val hpf = Biquad.highPass(sampleRate, cutoffHz = 1500.0)

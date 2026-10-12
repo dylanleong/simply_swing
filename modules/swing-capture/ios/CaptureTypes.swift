@@ -6,8 +6,10 @@ enum TriggerSource: String {
   case volumeKey
   case watch
   case impact
+  /// A wrist swing from the watch with no impact sound (practice swing). Apple Watch: Phase 6.
+  case wrist
 
-  var isAuto: Bool { self == .watch || self == .impact }
+  var isAuto: Bool { self == .watch || self == .impact || self == .wrist }
 }
 
 /// Mirrors EngineState in src/SwingCapture.types.ts.
@@ -52,6 +54,9 @@ struct CaptureConfigRecord: Record {
   @Field var sharpMode: Bool = false
   @Field var autoTrigger: Bool = true
   @Field var impactTrigger: Bool = true
+  /// Apple Watch support is Phase 6; accepted so the shared JS config decodes on iOS.
+  @Field var watchMode: String = "auto"
+  @Field var savePracticeSwings: Bool = false
 
   func toConfig() -> CaptureConfig {
     CaptureConfig(
@@ -97,7 +102,7 @@ enum ClipWindows {
   /// swing, so they keep the last `lookback` seconds (see ClipWindows.kt).
   static func forTrigger(_ source: TriggerSource, at time: Double, config: CaptureConfig) -> ClipWindow {
     switch source {
-    case .impact:
+    case .impact, .wrist:
       return ClipWindow(start: time - config.preRoll, end: time + config.postRoll, impact: time)
     default:
       return ClipWindow(start: time - config.lookback, end: time + manualTail, impact: nil)

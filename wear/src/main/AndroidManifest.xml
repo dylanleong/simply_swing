@@ -3,6 +3,11 @@
 
   <uses-feature android:name="android.hardware.type.watch" />
   <uses-permission android:name="android.permission.VIBRATE" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+  <!-- Normal (install-time) permission; satisfies Android 14's requirement for health FGS. -->
+  <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
 
   <application
     android:allowBackup="false"
@@ -14,6 +19,11 @@
     <meta-data
       android:name="com.google.android.wearable.standalone"
       android:value="false" />
+
+    <service
+      android:name=".SwingSensorService"
+      android:exported="false"
+      android:foregroundServiceType="health" />
 
     <activity
       android:name=".MainActivity"

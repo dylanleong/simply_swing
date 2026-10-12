@@ -121,6 +121,39 @@ export default function SettingsScreen() {
             </Setting>
           </Section>
 
+          <Section title="Watch">
+            <Setting
+              label="Use the watch to"
+              help={
+                settings.watchMode === 'auto'
+                  ? 'Open SimpleSwing on your watch. It senses your swing on the wrist, so only your own shots save, even at a busy range.'
+                  : settings.watchMode === 'tap'
+                    ? 'The watch is a remote: tap SAVE after your swing.'
+                    : 'The watch is ignored.'
+              }>
+              <Segmented
+                accessibilityLabel="Watch mode"
+                value={settings.watchMode}
+                onChange={(watchMode) => update({ watchMode })}
+                options={[
+                  { value: 'auto', label: 'Sense swings' },
+                  { value: 'tap', label: 'Tap to save' },
+                  { value: 'off', label: 'Off' },
+                ]}
+              />
+            </Setting>
+            <Setting
+              inline
+              label="Save practice swings"
+              help="Save swings without a ball too (sensed on the wrist, no impact sound needed).">
+              <Switch
+                value={settings.savePracticeSwings && settings.watchMode === 'auto'}
+                disabled={settings.watchMode !== 'auto'}
+                onValueChange={(savePracticeSwings) => update({ savePracticeSwings })}
+              />
+            </Setting>
+          </Section>
+
           <Section title="Battery">
             <Setting inline label="Dim screen between shots" help="After 30 seconds with nobody moving in the golfer box.">
               <Switch value={settings.dimScreen} onValueChange={(dimScreen) => update({ dimScreen })} />

@@ -48,6 +48,11 @@ class SwingCaptureModule : Module() {
       ),
     )
 
+    override fun onWatchStatus(connected: Boolean, sensing: Boolean) =
+      sendEvent("onWatchStatus", mapOf("connected" to connected, "sensing" to sensing))
+
+    override fun onWristSwing(peakDps: Int) = sendEvent("onWristSwing", mapOf("peakDps" to peakDps))
+
     override fun onMotion(level: Double, threshold: Double) =
       sendEvent("onMotion", mapOf("level" to level, "threshold" to threshold))
 
@@ -64,7 +69,18 @@ class SwingCaptureModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("SwingCapture")
 
-    Events("onStateChange", "onTrigger", "onClipReady", "onSound", "onMotion", "onExposure", "onThermalDowngrade", "onError")
+    Events(
+      "onStateChange",
+      "onTrigger",
+      "onClipReady",
+      "onSound",
+      "onMotion",
+      "onExposure",
+      "onWatchStatus",
+      "onWristSwing",
+      "onThermalDowngrade",
+      "onError",
+    )
 
     OnCreate {
       engine.listener = engineListener

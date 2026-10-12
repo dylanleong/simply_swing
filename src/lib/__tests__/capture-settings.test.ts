@@ -20,6 +20,8 @@ describe('parseSettings', () => {
       autoDeleteDays: 30,
       dimScreen: false,
       autoStandby: false,
+      watchMode: 'tap',
+      savePracticeSwings: true,
     };
     expect(parseSettings(JSON.stringify(stored))).toEqual(stored);
   });

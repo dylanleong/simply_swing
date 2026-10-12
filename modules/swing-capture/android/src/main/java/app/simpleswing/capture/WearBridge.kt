@@ -1,6 +1,9 @@
 package app.simpleswing.capture
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import com.google.android.gms.wearable.MessageClient
 import com.google.android.gms.wearable.MessageEvent
@@ -11,34 +14,112 @@ import com.google.android.gms.wearable.Wearable
  * key on both sides is what lets Google Play services route these messages.
  *
  * Protocol (keep in sync with wear/src/main/java/app/simpleswing/wear/WearProtocol.kt):
- *   watch → phone  /simpleswing/hello    ask for current state
- *   watch → phone  /simpleswing/trigger  save the last swing
- *   phone → watch  /simpleswing/state    payload: engine state name
- *   phone → watch  /simpleswing/saved    clip written
- *   phone → watch  /simpleswing/rejected trigger ignored (not armed, cooldown, quota)
+ *   watch → phone  /simpleswing/hello      ask for current state (+ we resend the config)
+ *   watch → phone  /simpleswing/trigger    tap-to-save
+ *   watch → phone  /simpleswing/swing      "ageMs,peakDps": wrist swing that peaked ageMs ago
+ *   watch → phone  /simpleswing/heartbeat  sensing is running (every ~5 s)
+ *   watch → phone  /simpleswing/pong       echo of a ping (clock round trip)
+ *   phone → watch  /simpleswing/state      engine state name
+ *   phone → watch  /simpleswing/saved      clip written
+ *   phone → watch  /simpleswing/rejected   trigger ignored (not armed, cooldown, quota)
+ *   phone → watch  /simpleswing/config     watch mode: auto | tap | off
+ *   phone → watch  /simpleswing/ping       elapsedRealtimeNanos as text
  */
 class WearBridge(
   context: Context,
   private val currentState: () -> EngineState,
   private val onTrigger: () -> Boolean,
+  /** Wrist swing that peaked [ageMs] + one-way latency before now. */
+  private val onWristSwing: (ageMs: Long, oneWayMs: Long, peakDps: Int) -> Unit,
+  private val onStatus: (connected: Boolean, sensing: Boolean) -> Unit,
 ) : MessageClient.OnMessageReceivedListener {
   private val messages = Wearable.getMessageClient(context)
   private val nodes = Wearable.getNodeClient(context)
+  private val handler = Handler(Looper.getMainLooper())
+
+  @Volatile private var mode = MODE_AUTO
+  @Volatile private var lastHeardMs = 0L
+  @Volatile private var lastHeartbeatMs = 0L
+  private val recentRttMs = ArrayDeque<Long>()
+  private var active = false
+  private var lastStatus: Pair<Boolean, Boolean>? = null
+
+  /** Half the best recent round trip: the delay for a watch message to reach us. */
+  val oneWayMs: Long
+    get() = synchronized(recentRttMs) { (recentRttMs.minOrNull() ?: DEFAULT_RTT_MS) / 2 }
+
+  /** The watch is reachable and reporting heartbeats from its swing sensor. */
+  val isSensing: Boolean
+    get() = SystemClock.elapsedRealtime() - lastHeartbeatMs < SENSING_TIMEOUT_MS
+
+  private val tick = object : Runnable {
+    override fun run() {
+      broadcast(PATH_PING, SystemClock.elapsedRealtimeNanos().toString())
+      reportStatus()
+      handler.postDelayed(this, TICK_MS)
+    }
+  }
 
   fun start() {
     messages.addListener(this).addOnFailureListener { Log.i(TAG, "Wear Data Layer unavailable: ${it.message}") }
   }
 
+  /** Ping and track the watch while Capture is running. */
+  fun setActive(on: Boolean) = handler.post {
+    if (active == on) return@post
+    active = on
+    handler.removeCallbacks(tick)
+    if (on) handler.post(tick)
+  }
+
+  fun setMode(watchMode: String) {
+    mode = watchMode
+    broadcast(PATH_CONFIG, watchMode)
+  }
+
   override fun onMessageReceived(event: MessageEvent) {
+    val now = SystemClock.elapsedRealtime()
+    lastHeardMs = now
+    val payload = String(event.data)
     when (event.path) {
-      PATH_HELLO -> send(event.sourceNodeId, PATH_STATE, currentState().jsName)
-      PATH_TRIGGER -> if (!onTrigger()) send(event.sourceNodeId, PATH_REJECTED, currentState().jsName)
+      PATH_HELLO -> {
+        send(event.sourceNodeId, PATH_STATE, currentState().jsName)
+        send(event.sourceNodeId, PATH_CONFIG, mode)
+      }
+      PATH_TRIGGER -> if (mode == MODE_OFF || !onTrigger()) send(event.sourceNodeId, PATH_REJECTED, currentState().jsName)
+      PATH_HEARTBEAT -> lastHeartbeatMs = now
+      PATH_PONG -> payload.toLongOrNull()?.let { sentNs ->
+        val rtt = (SystemClock.elapsedRealtimeNanos() - sentNs) / 1_000_000
+        if (rtt in 0..MAX_RTT_MS) {
+          synchronized(recentRttMs) {
+            recentRttMs.addLast(rtt)
+            while (recentRttMs.size > 8) recentRttMs.removeFirst()
+          }
+        }
+      }
+      PATH_SWING -> {
+        lastHeartbeatMs = now
+        val parts = payload.split(",")
+        val ageMs = parts.getOrNull(0)?.toLongOrNull() ?: return
+        val peakDps = parts.getOrNull(1)?.toIntOrNull() ?: 0
+        if (mode == MODE_AUTO) onWristSwing(ageMs, oneWayMs, peakDps)
+      }
     }
+    handler.post(::reportStatus)
   }
 
   fun broadcastState(state: EngineState) = broadcast(PATH_STATE, state.jsName)
 
   fun broadcastSaved() = broadcast(PATH_SAVED, "")
+
+  private fun reportStatus() {
+    val connected = SystemClock.elapsedRealtime() - lastHeardMs < CONNECTED_TIMEOUT_MS
+    val status = connected to (connected && isSensing && mode == MODE_AUTO)
+    if (status != lastStatus) {
+      lastStatus = status
+      onStatus(status.first, status.second)
+    }
+  }
 
   private fun broadcast(path: String, payload: String) {
     nodes.connectedNodes
@@ -57,5 +138,20 @@ class WearBridge(
     const val PATH_STATE = "/simpleswing/state"
     const val PATH_SAVED = "/simpleswing/saved"
     const val PATH_REJECTED = "/simpleswing/rejected"
+    const val PATH_CONFIG = "/simpleswing/config"
+    const val PATH_PING = "/simpleswing/ping"
+    const val PATH_PONG = "/simpleswing/pong"
+    const val PATH_SWING = "/simpleswing/swing"
+    const val PATH_HEARTBEAT = "/simpleswing/heartbeat"
+
+    const val MODE_AUTO = "auto"
+    const val MODE_TAP = "tap"
+    const val MODE_OFF = "off"
+
+    private const val TICK_MS = 5_000L
+    private const val CONNECTED_TIMEOUT_MS = 15_000L
+    private const val SENSING_TIMEOUT_MS = 15_000L
+    private const val DEFAULT_RTT_MS = 80L
+    private const val MAX_RTT_MS = 2_000L
   }
 }

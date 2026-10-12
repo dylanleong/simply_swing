@@ -36,12 +36,24 @@ import com.google.android.gms.wearable.Wearable
  * Ambient support keeps the app on the wrist between shots instead of returning to the watch face.
  */
 class MainActivity : ComponentActivity(), MessageClient.OnMessageReceivedListener {
+  private companion object {
+    const val KEY_MODE = "watchMode"
+  }
+
   private val messages by lazy { Wearable.getMessageClient(this) }
   private val nodes by lazy { Wearable.getNodeClient(this) }
   private val vibrator by lazy { getSystemService(Vibrator::class.java) }
 
   private var status by mutableStateOf(PhoneStatus.UNKNOWN)
   private var ambient by mutableStateOf(false)
+  private var sensing by mutableStateOf(false)
+  private var lastSwingDps by mutableStateOf<Double?>(null)
+  private val prefs by lazy { getSharedPreferences("simpleswing", MODE_PRIVATE) }
+
+  /** Watch mode from the phone's Settings; auto = sense swings on the wrist. */
+  private var mode: String
+    get() = prefs.getString(KEY_MODE, WearProtocol.MODE_AUTO) ?: WearProtocol.MODE_AUTO
+    set(value) = prefs.edit().putString(KEY_MODE, value).apply()
 
   private val ambientObserver = AmbientLifecycleObserver(
     this,
@@ -62,18 +74,27 @@ class MainActivity : ComponentActivity(), MessageClient.OnMessageReceivedListene
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     lifecycle.addObserver(ambientObserver)
-    setContent { SaveSwingScreen(status, ambient, onSave = ::saveSwing) }
+    setContent { SaveSwingScreen(status, ambient, sensing, lastSwingDps, onSave = ::saveSwing) }
   }
 
   override fun onResume() {
     super.onResume()
     messages.addListener(this)
+    SwingSensorService.listener = { runOnUiThread(::refreshSensing) }
+    refreshSensing()
+    if (mode == WearProtocol.MODE_AUTO) SwingSensorService.start(this)
     sendToPhone(WearProtocol.PATH_HELLO)
   }
 
   override fun onPause() {
     messages.removeListener(this)
+    SwingSensorService.listener = null
     super.onPause()
+  }
+
+  private fun refreshSensing() {
+    sensing = SwingSensorService.running
+    lastSwingDps = SwingSensorService.lastSwingDps
   }
 
   override fun onMessageReceived(event: MessageEvent) {
@@ -85,6 +106,12 @@ class MainActivity : ComponentActivity(), MessageClient.OnMessageReceivedListene
         status = PhoneStatus.fromEngineState(payload)
         buzz(VibrationEffect.createOneShot(400, VibrationEffect.DEFAULT_AMPLITUDE))
       }
+      WearProtocol.PATH_CONFIG -> {
+        mode = payload
+        if (payload == WearProtocol.MODE_AUTO) SwingSensorService.start(this) else SwingSensorService.stop(this)
+      }
+      // Clock probe: echo straight back so the phone can measure the round trip.
+      WearProtocol.PATH_PING -> messages.sendMessage(event.sourceNodeId, WearProtocol.PATH_PONG, event.data)
     }
   }
 
@@ -111,7 +138,13 @@ class MainActivity : ComponentActivity(), MessageClient.OnMessageReceivedListene
 }
 
 @Composable
-private fun SaveSwingScreen(status: PhoneStatus, ambient: Boolean, onSave: () -> Unit) {
+private fun SaveSwingScreen(
+  status: PhoneStatus,
+  ambient: Boolean,
+  sensing: Boolean,
+  lastSwingDps: Double?,
+  onSave: () -> Unit,
+) {
   MaterialTheme {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
       Column(
@@ -133,6 +166,14 @@ private fun SaveSwingScreen(status: PhoneStatus, ambient: Boolean, onSave: () ->
             Text("SAVE", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.Black)
           }
           Text(status.label, textAlign = TextAlign.Center, fontSize = 14.sp)
+          if (sensing) {
+            Text(
+              lastSwingDps?.let { "Watching swings · last ${it.toInt()}°/s" } ?: "Watching for swings",
+              textAlign = TextAlign.Center,
+              fontSize = 12.sp,
+              color = Color(0xFF3DCB7A),
+            )
+          }
         }
       }
     }

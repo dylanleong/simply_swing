@@ -7,6 +7,20 @@ object WearProtocol {
   const val PATH_STATE = "/simpleswing/state"
   const val PATH_SAVED = "/simpleswing/saved"
   const val PATH_REJECTED = "/simpleswing/rejected"
+
+  /** phone → watch: watch mode, "auto" | "tap" | "off". */
+  const val PATH_CONFIG = "/simpleswing/config"
+  /** phone → watch → phone: clock round-trip probe; payload echoed unchanged. */
+  const val PATH_PING = "/simpleswing/ping"
+  const val PATH_PONG = "/simpleswing/pong"
+  /** watch → phone: "ageMs,peakDps" — a swing whose peak was ageMs before sending. */
+  const val PATH_SWING = "/simpleswing/swing"
+  /** watch → phone, every few seconds while sensing: "1". */
+  const val PATH_HEARTBEAT = "/simpleswing/heartbeat"
+
+  const val MODE_AUTO = "auto"
+  const val MODE_TAP = "tap"
+  const val MODE_OFF = "off"
 }
 
 /** What the watch knows about the phone. Phone engine states plus watch-only ones. */

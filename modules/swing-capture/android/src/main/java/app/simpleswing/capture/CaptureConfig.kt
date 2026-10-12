@@ -7,7 +7,9 @@ enum class TriggerSource(val jsName: String, val isAuto: Boolean) {
   MANUAL("manual", false),
   VOLUME_KEY("volumeKey", false),
   WATCH("watch", true),
-  IMPACT("impact", true);
+  IMPACT("impact", true),
+  /** A wrist swing from the watch with no impact sound (practice swing). */
+  WRIST("wrist", true);
 
   companion object {
     fun fromJs(name: String): TriggerSource =
@@ -35,6 +37,8 @@ class CaptureConfigRecord : Record {
   @Field val sharpMode: Boolean = true
   @Field val autoTrigger: Boolean = true
   @Field val impactTrigger: Boolean = true
+  @Field val watchMode: String = WearBridge.MODE_AUTO
+  @Field val savePracticeSwings: Boolean = false
 
   fun toConfig() = CaptureConfig(
     fps = fps,
@@ -46,6 +50,8 @@ class CaptureConfigRecord : Record {
     sharpMode = sharpMode,
     autoTrigger = autoTrigger,
     impactTrigger = impactTrigger,
+    watchMode = watchMode,
+    savePracticeSwings = savePracticeSwings,
   )
 }
 
@@ -60,4 +66,7 @@ data class CaptureConfig(
   val sharpMode: Boolean,
   val autoTrigger: Boolean,
   val impactTrigger: Boolean,
+  /** auto = wrist swing detection, tap = watch SAVE button only, off = ignore the watch. */
+  val watchMode: String = WearBridge.MODE_AUTO,
+  val savePracticeSwings: Boolean = false,
 )

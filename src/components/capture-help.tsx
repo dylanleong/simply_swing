@@ -13,7 +13,9 @@ const steps = (lookbackSec: number): { title: string; body: string }[] => [
   },
   {
     title: 'Fit the golfer box',
-    body: 'Drag the dashed box over where you stand and swing. Drag a corner to resize it.',
+    body:
+      'Drag the dashed box over where you stand and swing; drag a corner to resize it. It flashes ' +
+      'green when it sees a swing (standing still is fine; it watches for movement).',
   },
   {
     title: 'Just hit balls',
@@ -26,6 +28,12 @@ const steps = (lookbackSec: number): { title: string; body: string }[] => [
     body:
       'After a practice swing, tap SAVE (or press a volume button / Bluetooth remote) to keep the ' +
       `last ${lookbackSec} seconds.`,
+  },
+  {
+    title: 'Wearing a watch?',
+    body:
+      'Open SimpleSwing on it. It senses your swing on the wrist, so only your own shots save, and ' +
+      'it can save practice swings too (Settings → Watch).',
   },
   {
     title: 'Review',

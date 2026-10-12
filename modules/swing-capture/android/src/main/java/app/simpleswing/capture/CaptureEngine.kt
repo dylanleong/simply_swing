@@ -44,6 +44,10 @@ interface EngineListener {
   fun onStateChange(state: EngineState, format: CaptureFormat?)
   fun onTrigger(source: TriggerSource, tImpactMs: Double)
   fun onClipReady(clip: Map<String, Any?>)
+  /** Watch reachable / wrist swing sensing active (auto mode, heartbeats arriving). */
+  fun onWatchStatus(connected: Boolean, sensing: Boolean)
+  /** A wrist swing from the watch, for the Levels panel. */
+  fun onWristSwing(peakDps: Int)
   /** Every sharp sound the detector hears, accepted or not, for on-screen calibration. */
   fun onSound(levelDb: Double, minLevelDb: Double, accepted: Boolean, reason: String?, motion: MotionGate.Verdict?)
   /** Golfer-box motion level, ~2 Hz, for framing and calibration. */
@@ -104,7 +108,17 @@ class CaptureEngine private constructor(private val context: Context) {
   /** Pipeline generation the sampler runs for; anything else stops it. */
   @Volatile private var motionGeneration = -1
   private var lastMotionReportUs = 0L
-  private val wear = WearBridge(context, { state }, { trigger(TriggerSource.WATCH) })
+  private val wear = WearBridge(
+    context,
+    currentState = { state },
+    onTrigger = { trigger(TriggerSource.WATCH) },
+    onWristSwing = ::onWristSwing,
+    onStatus = { connected, sensing -> listener?.onWatchStatus(connected, sensing) },
+  )
+  /** Sound + wrist decisions while the watch is sensing (guarded by itself). */
+  private val fusion = TriggerFusion()
+  /** Level details of sounds waiting for a wrist verdict, keyed by sound time. */
+  private val pendingSounds = HashMap<Long, Pair<Double, Double>>()
 
   // Owned by the camera thread.
   private var config: CaptureConfig? = null
@@ -172,6 +186,11 @@ class CaptureEngine private constructor(private val context: Context) {
     stopPipeline()
     config = null
     format = null
+    wear.setActive(false)
+    synchronized(fusion) {
+      fusion.clear()
+      pendingSounds.clear()
+    }
   }
 
   /**
@@ -260,6 +279,13 @@ class CaptureEngine private constructor(private val context: Context) {
       fpsRange = range
       autoTrigger = config.autoTrigger
       impactTrigger = config.impactTrigger
+      synchronized(fusion) {
+        fusion.clear()
+        pendingSounds.clear()
+        fusion.savePracticeSwings = config.savePracticeSwings
+      }
+      wear.setMode(config.watchMode)
+      wear.setActive(true)
       clock = CaptureClock(fmt.realtimeClock)
       val windowUs = ClipWindows.ringWindowUs(config)
       motionGate.setRoi(config.roi)
@@ -299,6 +325,12 @@ class CaptureEngine private constructor(private val context: Context) {
       videoEncoder = VideoEncoder(fmt.size, fmt.fps, encoderHandler, ::onVideoSample, { videoFormat = it }, ::onPipelineError)
       lateinit var detector: ImpactDetector
       detector = ImpactDetector(AudioPipeline.SAMPLE_RATE, cfg.sensitivity) { ptsUs, levelDb, marginDb, loudEnough ->
+        // With the watch sensing, the wrist decides instead of the camera (see TriggerFusion).
+        if (loudEnough && impactTrigger && ptsUs - lastTouchUs >= TOUCH_MUTE_US && wristDecides()) {
+          Log.d(TAG, "Impact at $ptsUs level=%.1f dB → waiting for wrist".format(levelDb))
+          onFusionSound(ptsUs, levelDb, detector.minLevelDb)
+          return@ImpactDetector
+        }
         // No verdict (preview not readable yet) lets the sound through rather than losing a swing.
         val motion = if (loudEnough) motionGate.evaluate(ptsUs) else null
         val reason = when {
@@ -406,6 +438,61 @@ class CaptureEngine private constructor(private val context: Context) {
     }
   }
 
+  // ---- Watch: wrist swings + sound (any thread; serialised on `fusion`) ----
+
+  /** The watch is the swing evidence when it's in auto mode and its sensor heartbeats are arriving. */
+  private fun wristDecides() = config?.watchMode == WearBridge.MODE_AUTO && wear.isSensing
+
+  private fun onFusionSound(atUs: Long, levelDb: Double, minLevelDb: Double) {
+    val decisions = synchronized(fusion) {
+      pendingSounds[atUs] = levelDb to minLevelDb
+      fusion.onSound(atUs, clock.nowUs())
+    }
+    applyFusion(decisions)
+  }
+
+  private fun onWristSwing(ageMs: Long, oneWayMs: Long, peakDps: Int) {
+    if (state == EngineState.IDLE) return
+    listener?.onWristSwing(peakDps)
+    // The swing peaked ageMs before the watch sent it, plus the radio hop to us.
+    val peakUs = clock.nowUs() - (ageMs + oneWayMs) * 1000
+    Log.d(TAG, "Wrist swing peak $peakDps°/s at $peakUs (age $ageMs ms, one-way $oneWayMs ms)")
+    val decisions = synchronized(fusion) { fusion.onWrist(peakUs, clock.nowUs()) }
+    applyFusion(decisions)
+  }
+
+  private fun pollFusion() {
+    val decisions = synchronized(fusion) { fusion.poll(clock.nowUs()) }
+    applyFusion(decisions)
+  }
+
+  private fun applyFusion(decisions: List<TriggerFusion.Decision>) {
+    for (d in decisions) {
+      val (levelDb, minLevelDb) = synchronized(fusion) { pendingSounds.remove(d.atUs) } ?: (0.0 to 0.0)
+      when (d.kind) {
+        TriggerFusion.Kind.IMPACT -> {
+          val accepted = trigger(TriggerSource.IMPACT, d.atUs)
+          Log.d(TAG, "Sound + wrist at ${d.atUs}: accepted=$accepted")
+          listener?.onSound(levelDb, minLevelDb, accepted, if (accepted) null else "busy", null)
+        }
+        TriggerFusion.Kind.NO_WRIST -> {
+          Log.d(TAG, "Sound at ${d.atUs} without a wrist swing: ignored")
+          // Kept for a late wrist message; re-stash the levels in case it arrives, then forget them.
+          synchronized(fusion) { pendingSounds[d.atUs] = levelDb to minLevelDb }
+          cameraHandler.postDelayed({ synchronized(fusion) { pendingSounds.remove(d.atUs) } }, LATE_WRIST_MS)
+          listener?.onSound(levelDb, minLevelDb, false, "wrist", null)
+        }
+        TriggerFusion.Kind.PRACTICE -> {
+          val accepted = trigger(TriggerSource.WRIST, d.atUs)
+          Log.d(TAG, "Practice swing at ${d.atUs}: accepted=$accepted")
+        }
+      }
+    }
+    val deadline = synchronized(fusion) { fusion.nextDeadlineUs() } ?: return
+    val delayMs = ((deadline - clock.nowUs()) / 1000).coerceAtLeast(1)
+    cameraHandler.postDelayed(::pollFusion, delayMs)
+  }
+
   /**
    * Sharp mode can't set the shutter directly (high-speed sessions only allow auto exposure), so it
    * asks AE for one stop less light, which AE mostly delivers with a faster shutter.
@@ -506,9 +593,12 @@ class CaptureEngine private constructor(private val context: Context) {
     motionGate.addFrame(now, luma, MOTION_W, MOTION_H)
     if (now - lastMotionReportUs >= MOTION_REPORT_US) {
       lastMotionReportUs = now
-      val level = motionGate.latest()
+      val level = motionGate.peakSince(now, MOTION_REPORT_US)
       val verdict = motionGate.evaluate(now)
-      if (level != null && verdict != null) listener?.onMotion(level, verdict.threshold)
+      if (level != null && verdict != null) {
+        Log.d(TAG, "Motion peak=%.1f%% threshold=%.1f%%".format(level, verdict.threshold))
+        listener?.onMotion(level, verdict.threshold)
+      }
     }
   }
 
@@ -614,10 +704,12 @@ class CaptureEngine private constructor(private val context: Context) {
     /** Sounds this soon after a screen touch are the phone being handled, not a strike. */
     private const val TOUCH_MUTE_US = 1_500_000L
     private const val SHARP_MODE_EV = -1.0
+    /** How long a sound rejected for "no wrist swing" can still be claimed by a late wrist message. */
+    private const val LATE_WRIST_MS = 2_500L
     private const val STANDBY_FPS = 30
     /** Upright portrait thumbnail of the preview for motion sensing. */
-    private const val MOTION_W = 36
-    private const val MOTION_H = 64
+    private const val MOTION_W = 72
+    private const val MOTION_H = 128
     private const val MOTION_INTERVAL_MS = 66L
     private const val MOTION_REPORT_US = 500_000L
 

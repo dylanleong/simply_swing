@@ -16,7 +16,7 @@ export type Swing = {
 };
 
 const CLIP_NAME = /^(swing_(\d+))\.mp4$/;
-const SOURCES: readonly TriggerSource[] = ['manual', 'volumeKey', 'watch', 'impact'];
+const SOURCES: readonly TriggerSource[] = ['manual', 'volumeKey', 'watch', 'impact', 'wrist'];
 
 const numberOrNull = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
@@ -78,6 +78,7 @@ export const SOURCE_LABEL: Record<TriggerSource, string> = {
   volumeKey: 'Remote',
   watch: 'Watch',
   impact: 'Impact',
+  wrist: 'Practice',
 };
 
 export function formatClipTime(epochMs: number, now = Date.now()): string {

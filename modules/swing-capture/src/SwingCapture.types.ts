@@ -1,9 +1,15 @@
 import type { StyleProp, ViewProps, ViewStyle } from 'react-native';
 
-/** What fired the capture. Auto sources count against the free-tier quota. */
-export type TriggerSource = 'manual' | 'volumeKey' | 'watch' | 'impact';
+/**
+ * What fired the capture. Auto sources count against the free-tier quota.
+ * 'wrist' = a swing sensed by the watch with no impact sound (practice swing).
+ */
+export type TriggerSource = 'manual' | 'volumeKey' | 'watch' | 'impact' | 'wrist';
 
-export const AUTO_TRIGGER_SOURCES: readonly TriggerSource[] = ['watch', 'impact'];
+export const AUTO_TRIGGER_SOURCES: readonly TriggerSource[] = ['watch', 'impact', 'wrist'];
+
+/** auto = the watch senses swings on the wrist; tap = watch SAVE button only; off = ignore the watch. */
+export type WatchMode = 'auto' | 'tap' | 'off';
 
 /** Golfer region of interest, normalised 0..1 in preview coordinates. Used by the motion gate. */
 export type NormalizedRect = { x: number; y: number; width: number; height: number };
@@ -29,6 +35,9 @@ export type CaptureConfig = {
   autoTrigger: boolean;
   /** Whether the impact-sound detector may fire (user toggle). */
   impactTrigger: boolean;
+  watchMode: WatchMode;
+  /** With the watch sensing: save swings that had no impact sound (practice swings). */
+  savePracticeSwings: boolean;
 };
 
 export type CaptureCapabilities = {
@@ -74,9 +83,10 @@ export type SoundEvent = {
   accepted: boolean;
   /**
    * Why it was ignored: 'quiet' (below minLevelDb), 'off' (toggle), 'touch' (phone being handled),
-   * 'still' (no swing in the golfer box), 'busy' (saving / cooldown / quota).
+   * 'still' (no swing in the golfer box), 'wrist' (watch sensing, but no wrist swing), 'busy'
+   * (saving / cooldown / quota).
    */
-  reason: 'quiet' | 'off' | 'touch' | 'still' | 'busy' | null;
+  reason: 'quiet' | 'off' | 'touch' | 'still' | 'wrist' | 'busy' | null;
   /** Peak golfer-box motion in the 1.5 s before the sound, and what it needed; null if not judged. */
   motionPeak: number | null;
   motionThreshold: number | null;
@@ -84,6 +94,12 @@ export type SoundEvent = {
 
 /** Golfer-box motion (mean luma change per frame, 0-255), ~2 Hz. */
 export type MotionEvent = { level: number; threshold: number };
+
+/** The SimpleSwing watch app is reachable / sensing wrist swings (auto mode, heartbeats arriving). */
+export type WatchStatusEvent = { connected: boolean; sensing: boolean };
+
+/** A wrist swing reported by the watch (peak rotation speed). */
+export type WristSwingEvent = { peakDps: number };
 
 /** What auto-exposure chose, ~1 Hz. Faster than 1/1000 s freezes the club. */
 export type ExposureEvent = { shutterSec: number; iso: number | null };
@@ -99,6 +115,8 @@ export type SwingCaptureModuleEvents = {
   onSound: (event: SoundEvent) => void;
   onMotion: (event: MotionEvent) => void;
   onExposure: (event: ExposureEvent) => void;
+  onWatchStatus: (event: WatchStatusEvent) => void;
+  onWristSwing: (event: WristSwingEvent) => void;
   onThermalDowngrade: (event: ThermalDowngradeEvent) => void;
   onError: (event: CaptureErrorEvent) => void;
 };

@@ -93,8 +93,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   private static let exportWatchdog = 3.0
   private static let standbyFps = 30
   private static let motionInterval = 1.0 / 15
-  private static let motionW = 36
-  private static let motionH = 64
+  private static let motionW = 72
+  private static let motionH = 128
   /// Portrait app, back camera: sensor buffers are landscape and rotated 90° on playback.
   private static let portraitTransform = CGAffineTransform(rotationAngle: .pi / 2)
 
@@ -402,7 +402,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     )
   }
 
-  /// Upright 36x64 luma thumbnail from the landscape Y plane (rotated 90° clockwise, 2x2 averaged).
+  /// Upright 72x128 luma thumbnail from the landscape Y plane (rotated 90° clockwise, 2x2 averaged).
   private func sampleMotion(_ sample: CMSampleBuffer, time: Double) {
     guard let pixels = CMSampleBufferGetImageBuffer(sample) else { return }
     CVPixelBufferLockBaseAddress(pixels, .readOnly)
@@ -431,7 +431,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
     motionGate.addFrame(time: time, luma: luma, width: mw, height: mh)
 
-    if time - lastMotionReport >= 0.5, let level = motionGate.latest(), let verdict = motionGate.evaluate(impact: time) {
+    if time - lastMotionReport >= 0.5, let level = motionGate.peak(since: time, span: 0.5),
+       let verdict = motionGate.evaluate(impact: time) {
       lastMotionReport = time
       listener?.engineMotion(level: level, threshold: verdict.threshold)
     }

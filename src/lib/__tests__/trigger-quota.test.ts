@@ -34,6 +34,12 @@ describe('trigger quota', () => {
     expect(canAutoTrigger(s, false)).toBe(false);
   });
 
+  it('counts wrist-sensed practice swings as automatic', () => {
+    let s = currentSession(null, T0, newId);
+    for (let i = 0; i < FREE_AUTO_TRIGGERS_PER_SESSION; i++) s = recordCapture(s, 'wrist', T0 + i);
+    expect(canAutoTrigger(s, false)).toBe(false);
+  });
+
   it('gives Pro users unlimited auto triggers', () => {
     let s = currentSession(null, T0, newId);
     for (let i = 0; i < 10; i++) s = recordCapture(s, 'impact', T0 + i);

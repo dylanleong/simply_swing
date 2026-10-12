@@ -36,6 +36,13 @@ class ClipWindowsTest {
   }
 
   @Test
+  fun wristSwingIsCentredLikeAnImpact() {
+    val w = ClipWindows.forTrigger(TriggerSource.WRIST, 10_000_000, config)
+    assertEquals(7_000_000L, w.startUs)
+    assertEquals(10_000_000L, w.impactUs)
+  }
+
+  @Test
   fun ringCoversLongestClipPlusMargin() {
     assertEquals(6_300_000L + ClipWindows.RING_MARGIN_US, ClipWindows.ringWindowUs(config))
   }

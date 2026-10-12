@@ -71,6 +71,48 @@ class MotionGateTest {
   }
 
   @Test
+  fun thinClubAndArmsInABigBoxStillCount() {
+    // Field failure (2026-10-12): a full swing changed few pixels of a large box, so the old
+    // mean-change measure read ~0.7 against a threshold of 4. Thin, strongly changing pixels must pass.
+    val bw = 72
+    val bh = 128
+    val gate = MotionGate(roi)
+    fun f(seed: Int, stripeX: Int?): IntArray {
+      val r = Random(seed)
+      val px = IntArray(bw * bh) { 100 + r.nextInt(-2, 3) }
+      if (stripeX != null) for (y in 40 until 80) for (x in stripeX until stripeX + 2) px[y * bw + x] = 200
+      return px
+    }
+    var t = 0L
+    for (i in 0 until 60) { gate.addFrame(t, f(i, null), bw, bh); t += frameUs } // still at address
+    for (i in 0 until 15) { gate.addFrame(t, f(100 + i, 20 + (i * 2) % 30), bw, bh); t += frameUs } // club sweeps
+    val v = gate.evaluate(impactUs = t)!!
+    assertTrue("peak ${v.peak}% vs ${v.threshold}%", v.passed)
+  }
+
+  @Test
+  fun wholeFrameBrightnessDriftIsNotASwing() {
+    // Auto-exposure nudging every pixel a few levels must not look like movement.
+    val gate = MotionGate(roi)
+    var t = 0L
+    for (i in 0 until 60) {
+      val shift = (i % 6) * 2
+      gate.addFrame(t, IntArray(w * h) { 100 + shift }, w, h)
+      t += frameUs
+    }
+    assertFalse(gate.evaluate(impactUs = t)!!.passed)
+  }
+
+  @Test
+  fun peakSinceCatchesAShortDownswing() {
+    val gate = MotionGate(roi)
+    var t = feed(gate, 0, 2.0) { null }
+    t = feed(gate, t, 0.2) { i -> 10 + i * 4 } // 0.2 s burst
+    t = feed(gate, t, 0.2) { null }
+    assertTrue(gate.peakSince(t, 500_000)!! > gate.latest()!!)
+  }
+
+  @Test
   fun noVerdictWithoutHistory() {
     val gate = MotionGate(roi)
     gate.addFrame(0, frame(1), w, h)

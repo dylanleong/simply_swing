@@ -74,7 +74,7 @@ final class ImpactDetector {
     self.sampleRate = sampleRate
     self.hop = max(1, Int(sampleRate / 200)) // 5 ms
     self.marginDb = 30 - 15 * s
-    self.minLevelDb = -20 - 15 * s
+    self.minLevelDb = -24 - 16 * s // -24 / -32 / -40 dB at low / medium / high (see ImpactDetector.kt)
     self.hpf = Biquad.highPass(sampleRate: sampleRate, cutoff: 1500)
     self.onImpact = onImpact
   }

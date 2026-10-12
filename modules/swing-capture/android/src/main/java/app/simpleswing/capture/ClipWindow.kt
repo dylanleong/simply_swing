@@ -14,7 +14,8 @@ object ClipWindows {
    */
   fun forTrigger(source: TriggerSource, triggerUs: Long, config: CaptureConfig): ClipWindow =
     when (source) {
-      TriggerSource.IMPACT -> ClipWindow(
+      // A wrist swing's peak is the impact moment, so it's centred like an impact.
+      TriggerSource.IMPACT, TriggerSource.WRIST -> ClipWindow(
         startUs = triggerUs - config.preRollUs,
         endUs = triggerUs + config.postRollUs,
         impactUs = triggerUs,
