@@ -1,0 +1,104 @@
+import Foundation
+
+/// Was the golfer swinging just before an impact sound? Port of MotionGate.kt (same thresholds).
+/// Fed ~15 small upright luma frames per second; measures mean absolute change inside the golfer box.
+final class MotionGate {
+  struct Verdict {
+    let peak: Double
+    let threshold: Double
+    let passed: Bool
+  }
+
+  private let lookback: Double
+  private let history: Double
+  private let minMotion: Double
+  private let thresholdFactor: Double
+  private static let minSamples = 15
+  private static let slack = 0.15
+
+  private var roi: NormalizedRoi
+  private var previous: [UInt8]?
+  private var previousSize = (0, 0)
+  private var times: [Double] = []
+  private var energies: [Double] = []
+  private let lock = NSLock()
+
+  init(
+    roi: NormalizedRoi,
+    lookback: Double = 1.5,
+    history: Double = 6.0,
+    minMotion: Double = 4.0,
+    thresholdFactor: Double = 3.0
+  ) {
+    self.roi = roi
+    self.lookback = lookback
+    self.history = history
+    self.minMotion = minMotion
+    self.thresholdFactor = thresholdFactor
+  }
+
+  /// Returns true if the box actually changed.
+  @discardableResult
+  func setRoi(_ roi: NormalizedRoi) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    if self.roi == roi { return false }
+    self.roi = roi
+    return true
+  }
+
+  func reset() {
+    lock.lock()
+    defer { lock.unlock() }
+    previous = nil
+    times.removeAll()
+    energies.removeAll()
+  }
+
+  /// `luma` is row-major width x height, upright (portrait) orientation.
+  func addFrame(time: Double, luma: [UInt8], width: Int, height: Int) {
+    lock.lock()
+    defer { lock.unlock() }
+    if let prev = previous, previousSize == (width, height) {
+      let x0 = min(max(Int(roi.x * Double(width)), 0), width - 1)
+      let y0 = min(max(Int(roi.y * Double(height)), 0), height - 1)
+      let x1 = min(max(Int((roi.x + roi.width) * Double(width)), x0 + 1), width)
+      let y1 = min(max(Int((roi.y + roi.height) * Double(height)), y0 + 1), height)
+      var sum = 0
+      for y in y0..<y1 {
+        let row = y * width
+        for x in x0..<x1 {
+          sum += abs(Int(luma[row + x]) - Int(prev[row + x]))
+        }
+      }
+      times.append(time)
+      energies.append(Double(sum) / Double((x1 - x0) * (y1 - y0)))
+      while let first = times.first, time - first > history {
+        times.removeFirst()
+        energies.removeFirst()
+      }
+    }
+    previous = luma
+    previousSize = (width, height)
+  }
+
+  /// nil when there is too little history to judge.
+  func evaluate(impact: Double) -> Verdict? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard energies.count >= Self.minSamples else { return nil }
+    var peak = 0.0
+    for (t, e) in zip(times, energies) where t >= impact - lookback && t <= impact + Self.slack {
+      peak = max(peak, e)
+    }
+    let quiet = energies.sorted()[energies.count / 4]
+    let threshold = max(minMotion, quiet * thresholdFactor)
+    return Verdict(peak: peak, threshold: threshold, passed: peak >= threshold)
+  }
+
+  func latest() -> Double? {
+    lock.lock()
+    defer { lock.unlock() }
+    return energies.last
+  }
+}

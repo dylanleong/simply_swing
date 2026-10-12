@@ -1,3 +1,23 @@
+# SimpleSwing
+
+Local-first, hands-free golf swing recorder for iOS and Android (plus Wear OS / Apple Watch triggers).
+No accounts, no backend, no analytics SDKs — keep it that way. Full plan: `docs/PLAN.md`.
+**Read `docs/STATUS.md` first**: current state, device findings, and the iOS first-build checklist.
+
+## Project layout
+
+- `src/app/` — expo-router screens (Capture, Swings, Settings).
+- `src/lib/` — pure TypeScript domain logic (unit-tested with Jest). Import capture types from
+  `modules/swing-capture/src/SwingCapture.types`, not the module barrel, so tests don't load native code.
+- `modules/swing-capture/` — local Expo module: the native capture engine (Swift in `ios/`, Kotlin in
+  `android/`). Its TS contract lives in `src/SwingCaptureModule.ts` + `src/SwingCapture.types.ts`; keep both
+  native implementations in step with it. Editing this module's native code is expected (the CNG rule below is
+  about the root `ios/` and `android/` folders).
+
+## Checks
+
+`npm run lint && npm run typecheck && npm test`
+
 This is an Expo/React Native mobile application. Prioritize mobile-first patterns, performance, and cross-platform compatibility.
 
 ## Expo has changed — do not trust your training data

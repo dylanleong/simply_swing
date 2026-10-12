@@ -1,0 +1,33 @@
+package app.simpleswing.capture
+
+/** Which span of the rolling buffer becomes the saved clip. */
+data class ClipWindow(val startUs: Long, val endUs: Long, val impactUs: Long?)
+
+object ClipWindows {
+  /** Margin kept in the ring beyond the longest clip, so post-roll and export never race pruning. */
+  const val RING_MARGIN_US = 1_500_000L
+
+  /**
+   * Impact triggers know when the ball was struck, so the clip is centred on it.
+   * Manual, volume-key and watch triggers are pressed *after* the swing (the golfer walks to the
+   * phone or taps the watch at the finish), so they save the last [lookbackUs] plus a short tail.
+   */
+  fun forTrigger(source: TriggerSource, triggerUs: Long, config: CaptureConfig): ClipWindow =
+    when (source) {
+      TriggerSource.IMPACT -> ClipWindow(
+        startUs = triggerUs - config.preRollUs,
+        endUs = triggerUs + config.postRollUs,
+        impactUs = triggerUs,
+      )
+      else -> ClipWindow(
+        startUs = triggerUs - config.lookbackUs,
+        endUs = triggerUs + MANUAL_TAIL_US,
+        impactUs = null,
+      )
+    }
+
+  fun ringWindowUs(config: CaptureConfig): Long =
+    maxOf(config.preRollUs + config.postRollUs, config.lookbackUs + MANUAL_TAIL_US) + RING_MARGIN_US
+
+  private const val MANUAL_TAIL_US = 300_000L
+}

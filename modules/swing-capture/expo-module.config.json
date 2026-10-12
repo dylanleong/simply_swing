@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["SwingCaptureModule"]
+  },
+  "android": {
+    "modules": ["app.simpleswing.capture.SwingCaptureModule"]
+  }
+}
