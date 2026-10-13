@@ -19,9 +19,38 @@ describe('parseSwing', () => {
       fps: 120,
       durationMs: 4500.5,
       impactOffsetMs: 3000,
+      anchorOffsetMs: 3000,
       source: 'impact',
       sizeBytes: 15_000_000,
+      angle: null,
     });
+  });
+
+  it('attaches a second angle and counts its size', () => {
+    const main = JSON.stringify({ fps: 120, impactOffsetMs: null, anchorOffsetMs: 5800, source: 'manual' });
+    const b = JSON.stringify({ fps: 240, durationMs: 6200, anchorOffsetMs: 5750, view: 'faceOn', deviceName: 'Pixel 8', syncMs: 0.8 });
+    const s = parseSwing('swing_7.mp4', DIR, main, true, 10, { sidecarJson: b, sizeBytes: 5 });
+    expect(s?.anchorOffsetMs).toBe(5800);
+    expect(s?.sizeBytes).toBe(15);
+    expect(s?.angle).toEqual({
+      uri: `${DIR}/swing_7.b.mp4`,
+      fps: 240,
+      durationMs: 6200,
+      anchorOffsetMs: 5750,
+      view: 'faceOn',
+      deviceName: 'Pixel 8',
+      syncMs: 0.8,
+      nudgeMs: 0,
+    });
+  });
+
+  it('drops an angle that cannot be lined up', () => {
+    const noAnchor = JSON.stringify({ fps: 240 });
+    expect(parseSwing('swing_7.mp4', DIR, '{"anchorOffsetMs":1}', false, 1, { sidecarJson: noAnchor, sizeBytes: 1 })?.angle).toBeNull();
+    expect(parseSwing('swing_7.mp4', DIR, '{"anchorOffsetMs":1}', false, 1, { sidecarJson: null, sizeBytes: 1 })?.angle).toBeNull();
+    // An old main clip with neither anchor nor impact offset.
+    const b = JSON.stringify({ anchorOffsetMs: 3000 });
+    expect(parseSwing('swing_7.mp4', DIR, null, false, 1, { sidecarJson: b, sizeBytes: 1 })?.angle).toBeNull();
   });
 
   it('keeps clips without a sidecar, dated from the file name', () => {
@@ -37,6 +66,7 @@ describe('parseSwing', () => {
 
   it('ignores files that are not clips', () => {
     expect(parseSwing('swing_5.jpg', DIR, null, false)).toBeNull();
+    expect(parseSwing('swing_5.b.mp4', DIR, null, false)).toBeNull();
     expect(parseSwing('notes.mp4', DIR, null, false)).toBeNull();
   });
 });

@@ -18,6 +18,8 @@ data class WrittenClip(
   val durationUs: Long,
   /** Impact position inside the clip, or null when the trigger had no impact time. */
   val impactOffsetUs: Long?,
+  /** Trigger-instant position relative to the clip start (not clamped; lines up a second angle). */
+  val anchorOffsetUs: Long,
 )
 
 /** Muxes ring-buffer snapshots into an MP4 and grabs a thumbnail. Runs on the export thread. */
@@ -30,6 +32,8 @@ object ClipWriter {
     audio: List<EncodedSample>,
     orientationDegrees: Int,
     impactUs: Long?,
+    anchorUs: Long,
+    thumbnail: Boolean = true,
   ): WrittenClip {
     require(video.isNotEmpty()) { "No video in clip window" }
     val startUs = video.first().ptsUs
@@ -66,8 +70,8 @@ object ClipWriter {
 
     val impactOffsetUs = impactUs?.let { (it - startUs).coerceIn(0, endUs - startUs) }
     val thumbAtUs = impactOffsetUs ?: ((endUs - startUs) / 2)
-    val thumb = writeThumbnail(file, thumbAtUs, orientationDegrees)
-    return WrittenClip(file, thumb, endUs - startUs, impactOffsetUs)
+    val thumb = if (thumbnail) writeThumbnail(file, thumbAtUs, orientationDegrees) else null
+    return WrittenClip(file, thumb, endUs - startUs, impactOffsetUs, anchorUs - startUs)
   }
 
   /**

@@ -10,8 +10,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CaptureHelp } from '@/components/capture-help';
 import { GolferBox, type PreviewFrame } from '@/components/golfer-box';
+import { SecondCameraSheet } from '@/components/second-camera-sheet';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import { useMainPeerLink } from '@/hooks/use-main-peer-link';
 import { useTheme } from '@/hooks/use-theme';
 import {
   clampRoi,
@@ -23,6 +25,7 @@ import {
 } from '@/lib/capture-settings';
 import { loadCaptureSettings, saveCaptureSettings } from '@/lib/capture-settings-store';
 import { idlePhase, shouldDim, type IdlePhase } from '@/lib/idle';
+import { formatSync } from '@/lib/multicam';
 import { dimScreen, restoreScreen } from '@/lib/screen-dimmer';
 import { listSwings, pruneOldSwings } from '@/lib/swing-store';
 import SwingCapture, {
@@ -151,6 +154,9 @@ function Recorder() {
   const [bottomBarTop, setBottomBarTop] = useState<number | null>(null);
   const [showLevels, setShowLevels] = useState(false);
   const [showHelp, setShowHelp] = useState(!settings.seenHelp);
+  const [showCameraSheet, setShowCameraSheet] = useState(false);
+  const link = useMainPeerLink();
+  const { resume: resumeLink } = link;
   /** The hint that has faded out; a different hint (new state) shows again. */
   const [fadedHint, setFadedHint] = useState<string | null>(null);
   const stateEvent = useEvent(SwingCapture, 'onStateChange');
@@ -163,7 +169,8 @@ function Recorder() {
   });
 
   const updateSettings = (patch: Partial<CaptureSettings>) => {
-    const next = { ...settingsRef.current, ...patch };
+    // Merge onto what's stored: the second-camera link saves its own fields in the background.
+    const next = { ...loadCaptureSettings(), ...patch };
     settingsRef.current = next;
     setSettings(next);
     saveCaptureSettings(next);
@@ -192,12 +199,13 @@ function Recorder() {
       setSettings(current);
       pruneOldSwings(current.autoDeleteDays);
       setLastSwing(latestSwing());
+      resumeLink();
       SwingCapture.startAsync(captureConfig(current)).catch((e: Error) => setError(e.message));
       return () => {
         SwingCapture.stopAsync().catch(() => {});
         restoreScreen();
       };
-    }, [markActive])
+    }, [markActive, resumeLink])
   );
 
   useEffect(() => {
@@ -405,6 +413,20 @@ function Recorder() {
             <ThemedText style={styles.pillText}>{clip ? 'Replay · ¼ speed' : statusLabel}</ThemedText>
             {watch.sensing && !clip && <ThemedText style={styles.watchBadge}>⌚</ThemedText>}
           </Pressable>
+          <View style={styles.flex} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={link.connected ? `Second camera connected` : 'Second camera'}
+            onPress={() => {
+              if (!link.enabled) link.turnOn();
+              setShowCameraSheet(true);
+            }}
+            hitSlop={8}
+            style={[styles.camButton, link.connected && { borderColor: theme.accent }]}>
+            <ThemedText style={[styles.camText, link.connected && { color: theme.accent }]}>
+              {link.connected ? '2 cams' : link.enabled ? 'Cam…' : '+ Cam'}
+            </ThemedText>
+          </Pressable>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="How it works"
@@ -440,6 +462,15 @@ function Recorder() {
                   ? `Watch: sensing swings${lastWristDps ? ` · last ${lastWristDps}°/s` : ''}`
                   : 'Watch: connected (tap to save)'}
             </ThemedText>
+            {link.enabled && (
+              <ThemedText type="small" style={styles.levelText}>
+                {link.connected
+                  ? `2nd camera: ${link.status?.peerName ?? 'connected'} · ${link.status?.peerState ?? '…'}${
+                      formatSync(link.status?.syncMs ?? null) ? ` · sync ${formatSync(link.status?.syncMs ?? null)}` : ''
+                    }`
+                  : '2nd camera: searching…'}
+              </ThemedText>
+            )}
             {exposure && (
               <ThemedText type="small" style={styles.levelText}>
                 {`Shutter ${formatShutter(exposure.shutterSec)}${exposure.iso ? ` · ISO ${exposure.iso}` : ''}${
@@ -511,6 +542,17 @@ function Recorder() {
       </View>
 
       <CaptureHelp visible={showHelp} onClose={closeHelp} lookbackSec={settings.lookbackSec} />
+      <SecondCameraSheet
+        visible={showCameraSheet}
+        status={link.status}
+        peers={link.peers}
+        onConnect={link.connect}
+        onStop={() => {
+          link.turnOff();
+          setShowCameraSheet(false);
+        }}
+        onClose={() => setShowCameraSheet(false)}
+      />
     </View>
   );
 }
@@ -558,6 +600,19 @@ const styles = StyleSheet.create({
   dot: { width: 10, height: 10, borderRadius: 5 },
   pillText: { color: '#fff', fontWeight: '600', fontSize: 15, lineHeight: 20 },
   watchBadge: { color: '#3DCB7A', fontSize: 14, lineHeight: 20 },
+  flex: { flex: 1 },
+  camButton: {
+    height: 36,
+    paddingHorizontal: Spacing.three,
+    borderRadius: 18,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+    backgroundColor: SCRIM,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: Spacing.two,
+  },
+  camText: { color: '#fff', fontWeight: '700', fontSize: 14, lineHeight: 18 },
   helpButton: {
     width: 36,
     height: 36,

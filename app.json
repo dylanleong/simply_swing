@@ -18,14 +18,21 @@
       "infoPlist": {
         "NSCameraUsageDescription": "SimpleSwing records your golf swing so you can replay it in slow motion.",
         "NSMicrophoneUsageDescription": "SimpleSwing listens for the sound of club hitting ball to capture your swing automatically. Audio never leaves your device.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocalNetworkUsageDescription": "SimpleSwing connects to your other phone on the same Wi-Fi so it can film a second angle of your swing. Nothing leaves your local network.",
+        "NSBonjourServices": [
+          "_simpleswing._tcp"
+        ]
       }
     },
     "android": {
       "package": "app.simpleswing",
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE"
       ],
       "blockedPermissions": [
         "android.permission.SYSTEM_ALERT_WINDOW",

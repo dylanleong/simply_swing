@@ -8,12 +8,19 @@ struct WrittenClip {
   let duration: Double
   /// Impact position inside the clip (seconds), or nil for non-impact triggers.
   let impactOffset: Double?
+  /// Trigger-instant position relative to the clip start (not clamped; lines up a second angle).
+  let anchorOffset: Double
 }
 
 /// Stitches rolling-buffer chunks into a trimmed clip, makes thumbnails, sidecars and slow-mo copies.
 enum ClipExporter {
   /// Stitches [chunks] (chronological) and trims to [window]. Passthrough: no re-encode.
-  static func export(chunks: [ChunkRecorder.Chunk], window: ClipWindow, to output: URL) async throws -> WrittenClip {
+  static func export(
+    chunks: [ChunkRecorder.Chunk],
+    window: ClipWindow,
+    to output: URL,
+    thumbnail: Bool = true
+  ) async throws -> WrittenClip {
     guard let first = chunks.first else { throw CaptureException("No video in clip window") }
     let composition = AVMutableComposition()
     guard let videoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
@@ -57,8 +64,15 @@ enum ClipExporter {
 
     let duration = endOffset - startOffset
     let impactOffset = window.impact.map { min(max(0, $0 - first.start - startOffset), duration) }
-    let thumb = await writeThumbnail(for: output, at: impactOffset ?? duration / 2)
-    return WrittenClip(url: output, thumbnail: thumb, duration: duration, impactOffset: impactOffset)
+    var thumb: URL?
+    if thumbnail { thumb = await writeThumbnail(for: output, at: impactOffset ?? duration / 2) }
+    return WrittenClip(
+      url: output,
+      thumbnail: thumb,
+      duration: duration,
+      impactOffset: impactOffset,
+      anchorOffset: window.anchor - first.start - startOffset
+    )
   }
 
   /// `swing_123.json` beside `swing_123.mp4`; same keys as Android (ClipReadyEvent + createdAt).

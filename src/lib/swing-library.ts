@@ -1,4 +1,23 @@
-import type { TriggerSource } from '../../modules/swing-capture/src/SwingCapture.types';
+import type { CameraView, TriggerSource } from '../../modules/swing-capture/src/SwingCapture.types';
+
+/** The second camera's clip of a swing (`swing_<epochMs>.b.mp4` + `.b.json`), from a paired phone. */
+export type Angle = {
+  uri: string;
+  fps: number | null;
+  durationMs: number | null;
+  /** Where the shared anchor instant (impact or button press) falls in this clip. */
+  anchorOffsetMs: number;
+  /** The camera phone's angle on the golfer, if it said. */
+  view: CameraView | null;
+  deviceName: string | null;
+  /** Clock-sync uncertainty when the clip was taken (± ms). */
+  syncMs: number | null;
+  /** Manual alignment correction from the review screen. */
+  nudgeMs: number;
+};
+
+/** What the store found on disk for a swing's second angle. */
+export type AngleFile = { sidecarJson: string | null; sizeBytes: number | null };
 
 /** A saved clip as the library shows it. Built from `swing_<epochMs>.mp4` plus its optional `.json` sidecar. */
 export type Swing = {
@@ -10,15 +29,47 @@ export type Swing = {
   fps: number | null;
   durationMs: number | null;
   impactOffsetMs: number | null;
+  /** Where the trigger instant falls in the clip; lines the clip up with its second angle. */
+  anchorOffsetMs: number | null;
   source: TriggerSource | null;
-  /** Video file size, for the storage summary. */
+  /** Video file size (both angles), for the storage summary. */
   sizeBytes: number | null;
+  angle: Angle | null;
 };
 
 const CLIP_NAME = /^(swing_(\d+))\.mp4$/;
 const SOURCES: readonly TriggerSource[] = ['manual', 'volumeKey', 'watch', 'impact', 'wrist'];
+const VIEWS: readonly CameraView[] = ['dtl', 'faceOn'];
 
 const numberOrNull = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+function parseJsonObject(json: string | null): Record<string, unknown> {
+  if (!json) return {};
+  try {
+    const parsed = JSON.parse(json);
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {
+    // Corrupt sidecar: callers fall back to defaults.
+  }
+  return {};
+}
+
+/** An angle is only usable with its anchor; without one it can't be lined up with the main clip. */
+function parseAngle(uri: string, file: AngleFile): Angle | null {
+  const meta = parseJsonObject(file.sidecarJson);
+  const anchorOffsetMs = numberOrNull(meta.anchorOffsetMs);
+  if (anchorOffsetMs == null) return null;
+  return {
+    uri,
+    fps: numberOrNull(meta.fps),
+    durationMs: numberOrNull(meta.durationMs),
+    anchorOffsetMs,
+    view: VIEWS.includes(meta.view as CameraView) ? (meta.view as CameraView) : null,
+    deviceName: typeof meta.deviceName === 'string' ? meta.deviceName : null,
+    syncMs: numberOrNull(meta.syncMs),
+    nudgeMs: numberOrNull(meta.nudgeMs) ?? 0,
+  };
+}
 
 /**
  * Builds a Swing from a clip file. Clips saved before sidecars existed (or with a corrupt one)
@@ -29,22 +80,18 @@ export function parseSwing(
   dirUri: string,
   sidecarJson: string | null,
   hasThumb: boolean,
-  sizeBytes: number | null = null
+  sizeBytes: number | null = null,
+  angleFile: AngleFile | null = null
 ): Swing | null {
   const match = CLIP_NAME.exec(fileName);
   if (!match) return null;
   const [, id, stamp] = match;
   const base = dirUri.endsWith('/') ? dirUri : `${dirUri}/`;
-
-  let meta: Record<string, unknown> = {};
-  if (sidecarJson) {
-    try {
-      const parsed = JSON.parse(sidecarJson);
-      if (parsed && typeof parsed === 'object') meta = parsed;
-    } catch {
-      // Corrupt sidecar: fall back to what the file name tells us.
-    }
-  }
+  // Corrupt sidecar: fall back to what the file name tells us.
+  const meta = parseJsonObject(sidecarJson);
+  const impactOffsetMs = numberOrNull(meta.impactOffsetMs);
+  const anchorOffsetMs = numberOrNull(meta.anchorOffsetMs) ?? impactOffsetMs;
+  const angle = angleFile && anchorOffsetMs != null ? parseAngle(`${base}${id}.b.mp4`, angleFile) : null;
 
   return {
     id,
@@ -53,9 +100,11 @@ export function parseSwing(
     createdAt: numberOrNull(meta.createdAt) ?? Number(stamp),
     fps: numberOrNull(meta.fps),
     durationMs: numberOrNull(meta.durationMs),
-    impactOffsetMs: numberOrNull(meta.impactOffsetMs),
+    impactOffsetMs,
+    anchorOffsetMs,
     source: SOURCES.includes(meta.source as TriggerSource) ? (meta.source as TriggerSource) : null,
-    sizeBytes,
+    sizeBytes: sizeBytes == null ? null : sizeBytes + (angleFile?.sizeBytes ?? 0),
+    angle,
   };
 }
 

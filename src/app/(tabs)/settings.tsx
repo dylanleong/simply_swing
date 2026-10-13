@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState, type ReactNode } from 'react';
-import { ScrollView, StyleSheet, Switch, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Segmented } from '@/components/segmented';
@@ -50,7 +50,8 @@ export default function SettingsScreen() {
   );
 
   const update = (patch: Partial<CaptureSettings>) => {
-    const next = { ...settings, ...patch };
+    // Merge onto what's stored: the second-camera link saves its own fields in the background.
+    const next = { ...loadCaptureSettings(), ...patch };
     setSettings(next);
     saveCaptureSettings(next);
     if (patch.autoDeleteDays !== undefined) {
@@ -154,6 +155,22 @@ export default function SettingsScreen() {
             </Setting>
           </Section>
 
+          <Section title="Second camera">
+            <Setting
+              label="Film a second angle"
+              help="Use another phone with SimpleSwing as a second camera, face on or down the line. On the phone you swing with, tap + Cam on the Capture screen; every swing it saves is filmed from both.">
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => router.push('/camera-mode')}
+                style={({ pressed }) => [
+                  styles.button,
+                  { backgroundColor: theme.backgroundElement, opacity: pressed ? 0.7 : 1 },
+                ]}>
+                <ThemedText>Use this phone as the camera</ThemedText>
+              </Pressable>
+            </Setting>
+          </Section>
+
           <Section title="Battery">
             <Setting inline label="Dim screen between shots" help="After 30 seconds with nobody moving in the golfer box.">
               <Switch value={settings.dimScreen} onValueChange={(dimScreen) => update({ dimScreen })} />
@@ -243,5 +260,6 @@ const styles = StyleSheet.create({
   inline: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.three },
   inlineLabel: { flex: 1 },
   stacked: { gap: Spacing.two },
+  button: { paddingVertical: Spacing.three, borderRadius: Spacing.three, alignItems: 'center' },
   about: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: Spacing.three, gap: Spacing.one },
 });

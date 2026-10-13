@@ -1,6 +1,7 @@
 import { NativeModule, requireNativeModule, type PermissionResponse } from 'expo';
 
 import type {
+  CameraView,
   CaptureCapabilities,
   CaptureConfig,
   NormalizedRect,
@@ -35,6 +36,17 @@ declare class SwingCaptureModule extends NativeModule<SwingCaptureModuleEvents> 
    * to the gallery or sharing. Returns its file URI (cached; regenerated if the clip changes).
    */
   exportSlowMotionAsync(uri: string, factor: number): Promise<string>;
+  /** Main phone: look for camera phones (reported via `onPeersFound`) and reconnect to the last one. */
+  startMainLink(): void;
+  /** Main phone: connect to a found camera (`PeerInfo.id`) or a typed `host:port` / `host`. */
+  connectPeer(idOrAddress: string): void;
+  /**
+   * Become a camera phone: advertise on the local network and save whatever the main phone triggers.
+   * Local triggers (impact sound, buttons, watch) are ignored while in this role.
+   */
+  startCameraLink(view: CameraView): void;
+  /** Back to solo: disconnect and stop advertising / searching. */
+  stopPeerLink(): void;
 }
 
 export default requireNativeModule<SwingCaptureModule>('SwingCapture');

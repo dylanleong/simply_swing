@@ -195,6 +195,7 @@ Pose-based trimming (Vision / ML Kit pose) and watch-motion auto-detect come aft
 - Watch motion auto-detect: `HKWorkoutSession` on watchOS, Health Services `ExerciseType.GOLF` on Wear OS.
 - Pose-based swing phases and trimming.
 - Paid add-ons: Multi-Camera Sync (£4.99), with the iPad down-the-line and the iPhone face-on; Pro Export (£2.99) for side-by-side and drawings burned into the video.
+  - *Progress (2026-10-13):* Multi-Camera Sync is built early, on Android (unit-tested) and iOS (ported, not yet compiled), but not yet gated behind the paywall. It hasn't been run on two real phones. See `STATUS.md` → Second camera.
 - Replay on the watch.
 
 Rough total to v1.0: **10–12 weeks**.

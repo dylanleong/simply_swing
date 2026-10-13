@@ -55,6 +55,11 @@ interface EngineListener {
   /** Shutter time and ISO auto-exposure is using, ~1 Hz. */
   fun onExposure(exposureNs: Long, iso: Int?)
   fun onThermalDowngrade(fromFps: Int, toFps: Int)
+  /** Two-phone link status (see PeerLink). */
+  fun onPeerStatus(status: PeerLink.Status)
+  fun onPeersFound(peers: List<PeerLink.PeerInfo>)
+  /** The second angle of clip [id] has been received. */
+  fun onAngleReady(id: String)
   fun onError(code: String, message: String)
 }
 
@@ -115,6 +120,8 @@ class CaptureEngine private constructor(private val context: Context) {
     onWristSwing = ::onWristSwing,
     onStatus = { connected, sensing -> listener?.onWatchStatus(connected, sensing) },
   )
+  /** Link to a second phone: drives it as a camera (main role) or is driven by one (camera role). */
+  val peers = PeerLink(context, { clipsDir }, PeerHost())
   /** Sound + wrist decisions while the watch is sensing (guarded by itself). */
   private val fusion = TriggerFusion()
   /** Level details of sounds waiting for a wrist verdict, keyed by sound time. */
@@ -149,7 +156,17 @@ class CaptureEngine private constructor(private val context: Context) {
   @Volatile private var lastTriggerUs = Long.MIN_VALUE / 2
   private val triggerLock = Any()
 
-  private class PendingClip(val source: TriggerSource, val window: ClipWindow, val format: CaptureFormat) {
+  /**
+   * [id] is the file stem, chosen at trigger time so the camera phone's angle can share it.
+   * [forPeer] clips were asked for by the main phone: they're streamed to it rather than kept.
+   */
+  private class PendingClip(
+    val source: TriggerSource,
+    val window: ClipWindow,
+    val format: CaptureFormat,
+    val id: String,
+    val forPeer: Boolean = false,
+  ) {
     @Volatile var exporting = false
   }
 
@@ -198,6 +215,8 @@ class CaptureEngine private constructor(private val context: Context) {
    * button presses, the detected strike time for impacts.
    */
   fun trigger(source: TriggerSource, atUs: Long = clock.nowUs()): Boolean {
+    // A camera phone saves only what the main phone asks for (captureForPeer).
+    if (peers.role == PeerRole.CAMERA) return false
     // A button, remote or watch press while in standby means "I'm back": wake rather than save
     // (there is nothing recorded to save yet).
     if (state == EngineState.STANDBY && source != TriggerSource.IMPACT) {
@@ -211,15 +230,34 @@ class CaptureEngine private constructor(private val context: Context) {
       val fmt = format ?: return false
       if (atUs - lastTriggerUs < COOLDOWN_US) return false
       lastTriggerUs = atUs
-      val clip = PendingClip(source, ClipWindows.forTrigger(source, atUs, cfg), fmt)
-      pending = clip
-      setState(EngineState.TRIGGERED)
+      val clip = PendingClip(source, ClipWindows.forTrigger(source, atUs, cfg), fmt, "swing_${System.currentTimeMillis()}")
+      startPending(clip)
       listener?.onTrigger(source, atUs / 1000.0)
-      // Never leave the UI stuck on "Saving" if frames stop arriving or timestamps disagree.
-      val waitMs = (clip.window.endUs - clock.nowUs()) / 1000 + EXPORT_WATCHDOG_MS
-      cameraHandler.postDelayed({ abandonIfStuck(clip) }, waitMs.coerceAtLeast(EXPORT_WATCHDOG_MS))
+      if (peers.role == PeerRole.MAIN) peers.sendTrigger(clip.id, clip.window)
       return true
     }
+  }
+
+  /**
+   * Camera role: the main phone triggered; save [window] (already on our clock) as clip [id] and send
+   * it back. No cooldown or quota here: the main phone applied them. False if we're not recording.
+   */
+  fun captureForPeer(id: String, window: ClipWindow): Boolean {
+    synchronized(triggerLock) {
+      if (state != EngineState.ARMED) return false
+      val fmt = format ?: return false
+      startPending(PendingClip(TriggerSource.MANUAL, window, fmt, id, forPeer = true))
+      return true
+    }
+  }
+
+  /** Under [triggerLock]. */
+  private fun startPending(clip: PendingClip) {
+    pending = clip
+    setState(EngineState.TRIGGERED)
+    // Never leave the UI stuck on "Saving" if frames stop arriving or timestamps disagree.
+    val waitMs = (clip.window.endUs - clock.nowUs()) / 1000 + EXPORT_WATCHDOG_MS
+    cameraHandler.postDelayed({ abandonIfStuck(clip) }, waitMs.coerceAtLeast(EXPORT_WATCHDOG_MS))
   }
 
   /** Moves the golfer box live; the motion history restarts so old frames aren't judged by the new box. */
@@ -285,7 +323,7 @@ class CaptureEngine private constructor(private val context: Context) {
         fusion.savePracticeSwings = config.savePracticeSwings
       }
       wear.setMode(config.watchMode)
-      wear.setActive(true)
+      wear.setActive(peers.role != PeerRole.CAMERA)
       clock = CaptureClock(fmt.realtimeClock)
       val windowUs = ClipWindows.ringWindowUs(config)
       motionGate.setRoi(config.roi)
@@ -650,14 +688,27 @@ class CaptureEngine private constructor(private val context: Context) {
       val vf = videoFormat ?: throw CaptureException("E_EXPORT", "Video encoder not ready")
       val video = videoRing.snapshot(p.window.startUs, p.window.endUs)
       val audio = audioRing.snapshot(p.window.startUs, p.window.endUs)
-      val file = File(clipsDir, "swing_${System.currentTimeMillis()}.mp4")
-      val clip = ClipWriter.write(file, vf, video, audioFormat, audio, p.format.sensorOrientation, p.window.impactUs)
+      if (p.forPeer) {
+        val dir = File(context.cacheDir, "peer").apply { mkdirs() }
+        val clip = ClipWriter.write(
+          File(dir, "${p.id}.mp4"), vf, video, audioFormat, audio, p.format.sensorOrientation,
+          p.window.impactUs, p.window.anchorUs, thumbnail = false,
+        )
+        peers.sendClip(p.id, clip.file, p.format.fps, clip.durationUs / 1000.0, clip.anchorOffsetUs / 1000.0)
+        return
+      }
+      val file = File(clipsDir, "${p.id}.mp4")
+      val clip = ClipWriter.write(
+        file, vf, video, audioFormat, audio, p.format.sensorOrientation, p.window.impactUs, p.window.anchorUs,
+      )
       val info = mapOf(
+        "id" to p.id,
         "uri" to "file://${clip.file.absolutePath}",
         "thumbUri" to clip.thumbnail?.let { "file://${it.absolutePath}" },
         "fps" to p.format.fps,
         "durationMs" to clip.durationUs / 1000.0,
         "impactOffsetMs" to clip.impactOffsetUs?.let { it / 1000.0 },
+        "anchorOffsetMs" to clip.anchorOffsetUs / 1000.0,
         "source" to p.source.jsName,
       )
       ClipWriter.writeSidecar(clip.file, info + ("createdAt" to System.currentTimeMillis()))
@@ -690,7 +741,40 @@ class CaptureEngine private constructor(private val context: Context) {
     if (state == next) return
     state = next
     wear.broadcastState(next)
+    peers.onEngineState(next)
     listener?.onStateChange(next, if (next == EngineState.IDLE) null else format)
+  }
+
+  /** What PeerLink needs from the engine. */
+  private inner class PeerHost : PeerLink.Host {
+    override fun nowUs() = clock.nowUs()
+
+    override fun fps() = format?.fps ?: config?.fps ?: 0
+
+    override fun engineState() = state
+
+    override fun onPeerTrigger(id: String, window: ClipWindow) = captureForPeer(id, window)
+
+    /** No main phone recording means nothing to save: idle in standby until it is. */
+    override fun onMainState(state: String) {
+      setStandby(state == EngineState.STANDBY.jsName || state == EngineState.IDLE.jsName)
+    }
+
+    override fun onAngleReady(id: String) {
+      listener?.onAngleReady(id)
+    }
+
+    override fun onStatus(status: PeerLink.Status) {
+      listener?.onPeerStatus(status)
+    }
+
+    override fun onPeersFound(peers: List<PeerLink.PeerInfo>) {
+      listener?.onPeersFound(peers)
+    }
+
+    override fun onError(code: String, message: String) {
+      listener?.onError(code, message)
+    }
   }
 
   private fun hasPermission(permission: String) =

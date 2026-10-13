@@ -1,0 +1,216 @@
+import { useEvent } from 'expo';
+import { useKeepAwake } from 'expo-keep-awake';
+import { router, Stack, useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Pressable, StyleSheet, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { Segmented } from '@/components/segmented';
+import { ThemedText } from '@/components/themed-text';
+import { Spacing } from '@/constants/theme';
+import { useTheme } from '@/hooks/use-theme';
+import {
+  CAMERA_VIEW_OPTIONS,
+  LOOKBACK_OPTIONS,
+  POST_ROLL_SEC,
+  PRE_ROLL_OPTIONS,
+  SENSITIVITY_VALUE,
+  type CaptureSettings,
+} from '@/lib/capture-settings';
+import { loadCaptureSettings, saveCaptureSettings } from '@/lib/capture-settings-store';
+import { formatSync, VIEW_LABEL } from '@/lib/multicam';
+import { dimScreen, restoreScreen } from '@/lib/screen-dimmer';
+import SwingCapture, {
+  SwingCaptureView,
+  useCapturePermissions,
+  type CameraView,
+  type CaptureConfig,
+  type PeerStatusEvent,
+} from '../../modules/swing-capture';
+
+/** Nobody touches the camera phone once it's on its tripod. */
+const DIM_AFTER_MS = 30_000;
+
+/**
+ * The camera phone records only what the main phone asks for, so it keeps the longest buffer any
+ * main phone setting could need and never triggers on its own.
+ */
+function cameraConfig(s: CaptureSettings): CaptureConfig {
+  return {
+    fps: s.fps,
+    preRollSec: Math.max(...PRE_ROLL_OPTIONS),
+    postRollSec: POST_ROLL_SEC,
+    lookbackSec: Math.max(...LOOKBACK_OPTIONS),
+    roi: s.roi,
+    sensitivity: SENSITIVITY_VALUE[s.sensitivity],
+    sharpMode: s.sharpMode,
+    autoTrigger: false,
+    impactTrigger: false,
+    watchMode: 'off',
+    savePracticeSwings: false,
+  };
+}
+
+export default function CameraModeScreen() {
+  const [permission, requestPermission] = useCapturePermissions();
+  const theme = useTheme();
+
+  if (!permission) return <View style={styles.black} />;
+  if (!permission.granted) {
+    return (
+      <SafeAreaView style={[styles.gate, { backgroundColor: theme.background }]}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <ThemedText type="subtitle">Camera & microphone</ThemedText>
+        <ThemedText themeColor="textSecondary">This phone needs the camera to film the second angle.</ThemedText>
+        {permission.canAskAgain && (
+          <Pressable onPress={requestPermission} style={[styles.button, { backgroundColor: theme.accent }]}>
+            <ThemedText style={styles.buttonText}>Allow access</ThemedText>
+          </Pressable>
+        )}
+      </SafeAreaView>
+    );
+  }
+  return <CameraPhone />;
+}
+
+function CameraPhone() {
+  useKeepAwake();
+  const theme = useTheme();
+  const [view, setView] = useState<CameraView>(() => loadCaptureSettings().cameraView);
+  const [status, setStatus] = useState<PeerStatusEvent | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [filmed, setFilmed] = useState(0);
+  const stateEvent = useEvent(SwingCapture, 'onStateChange');
+  const state = stateEvent?.state ?? 'idle';
+  const dimTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const wake = useCallback(() => {
+    restoreScreen();
+    if (dimTimer.current) clearTimeout(dimTimer.current);
+    dimTimer.current = setTimeout(dimScreen, DIM_AFTER_MS);
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      const s = loadCaptureSettings();
+      // Role first, so the engine starts as a camera (no watch, no local triggers).
+      SwingCapture.startCameraLink(s.cameraView);
+      SwingCapture.startAsync(cameraConfig(s)).catch((e: Error) => setError(e.message));
+      wake();
+      return () => {
+        SwingCapture.stopPeerLink();
+        SwingCapture.stopAsync().catch(() => {});
+        if (dimTimer.current) clearTimeout(dimTimer.current);
+        restoreScreen();
+      };
+    }, [wake])
+  );
+
+  useEffect(() => {
+    const subs = [
+      SwingCapture.addListener('onPeerStatus', (s) => {
+        if (s.role === 'camera') setStatus(s);
+      }),
+      SwingCapture.addListener('onError', (e) => setError(e.message)),
+      SwingCapture.addListener('onStateChange', (e) => {
+        if (e.state === 'exporting') setFilmed((n) => n + 1);
+      }),
+    ];
+    return () => subs.forEach((s) => s.remove());
+  }, []);
+
+  const changeView = (next: CameraView) => {
+    setView(next);
+    saveCaptureSettings({ ...loadCaptureSettings(), cameraView: next });
+    SwingCapture.startCameraLink(next);
+  };
+
+  const connected = status?.state === 'connected';
+  const sync = formatSync(status?.syncMs ?? null);
+  const engineLabel =
+    state === 'armed'
+      ? 'Recording'
+      : state === 'triggered' || state === 'exporting'
+        ? 'Sending swing…'
+        : state === 'standby'
+          ? 'Resting until the main phone records'
+          : 'Starting camera…';
+
+  return (
+    <View style={styles.black} onTouchStart={wake}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <SwingCaptureView style={StyleSheet.absoluteFill} />
+
+      <SafeAreaView edges={['top']} style={styles.top} pointerEvents="box-none">
+        <View style={styles.card}>
+          <View style={styles.row}>
+            <View style={[styles.dot, { backgroundColor: connected ? theme.accent : '#FFB020' }]} />
+            <ThemedText style={styles.title}>
+              {connected ? `Connected to ${status?.peerName ?? 'main phone'}` : 'Waiting for the main phone…'}
+            </ThemedText>
+          </View>
+          {connected ? (
+            <ThemedText type="small" style={styles.text}>
+              {engineLabel}
+              {sync ? ` · in sync ${sync}` : ''}
+              {filmed > 0 ? ` · ${filmed} swing${filmed === 1 ? '' : 's'} sent` : ''}
+            </ThemedText>
+          ) : (
+            <ThemedText type="small" style={styles.text}>
+              On the main phone, tap + Cam on the Capture screen. Both phones need the same Wi-Fi or hotspot.
+              {status?.address ? `\nIf it isn't listed, type ${status.address}` : ''}
+            </ThemedText>
+          )}
+          {error && (
+            <ThemedText type="small" style={styles.error}>
+              {error}
+            </ThemedText>
+          )}
+        </View>
+      </SafeAreaView>
+
+      <SafeAreaView edges={['bottom']} style={styles.bottom} pointerEvents="box-none">
+        <View style={styles.card}>
+          <ThemedText type="small" style={styles.text}>
+            This phone films {VIEW_LABEL[view].toLowerCase()}
+          </ThemedText>
+          <Segmented
+            accessibilityLabel="This camera's view"
+            value={view}
+            onChange={changeView}
+            options={CAMERA_VIEW_OPTIONS.map((v) => ({ value: v, label: VIEW_LABEL[v] }))}
+          />
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.back()}
+            style={({ pressed }) => [styles.button, styles.exit, { opacity: pressed ? 0.7 : 1 }]}>
+            <ThemedText style={styles.buttonText}>Stop camera mode</ThemedText>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    </View>
+  );
+}
+
+const SCRIM = 'rgba(0,0,0,0.6)';
+
+const styles = StyleSheet.create({
+  black: { flex: 1, backgroundColor: '#000' },
+  top: { position: 'absolute', top: 0, left: 0, right: 0, padding: Spacing.three },
+  bottom: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: Spacing.three },
+  card: { backgroundColor: SCRIM, borderRadius: Spacing.three, padding: Spacing.three, gap: Spacing.two },
+  row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  dot: { width: 10, height: 10, borderRadius: 5 },
+  title: { color: '#fff', fontWeight: '700', flexShrink: 1 },
+  text: { color: '#fff' },
+  error: { color: '#FF8A80' },
+  gate: { flex: 1, padding: Spacing.four, gap: Spacing.three, justifyContent: 'center' },
+  button: {
+    paddingHorizontal: Spacing.four,
+    paddingVertical: Spacing.three,
+    borderRadius: Spacing.three,
+    alignItems: 'center',
+  },
+  exit: { backgroundColor: 'rgba(255,255,255,0.2)' },
+  buttonText: { color: '#fff', fontWeight: '700' },
+});

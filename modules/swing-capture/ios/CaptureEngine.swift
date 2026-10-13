@@ -9,6 +9,11 @@ protocol CaptureEngineListener: AnyObject {
   func engineMotion(level: Double, threshold: Double)
   func engineExposure(shutterSec: Double, iso: Double?)
   func engineThermalDowngrade(from: Int, to: Int)
+  /// Two-phone link status (see PeerLink).
+  func enginePeerStatus(_ status: PeerLink.Status)
+  func enginePeersFound(_ peers: [PeerLink.PeerInfo])
+  /// The second angle of clip `id` has been received.
+  func engineAngleReady(id: String)
   func engineError(code: String, message: String)
 }
 
@@ -27,6 +32,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
   weak var listener: CaptureEngineListener?
   let session = AVCaptureSession()
+  /// Link to a second phone: drives it as a camera (main role) or is driven by one (camera role).
+  let peers = PeerLink()
 
   /// Quota gate for automatic sources (impact + watch).
   var autoTrigger: Bool {
@@ -75,17 +82,23 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   private var lastExposureReport = -Double.infinity
   private var pending: PendingClip?
 
+  /// `id` is the file stem, chosen at trigger time so the camera phone's angle can share it.
+  /// `forPeer` clips were asked for by the main phone: they're streamed to it rather than kept.
   private final class PendingClip {
     let source: TriggerSource
     let window: ClipWindow
     let fps: Int
+    let id: String
+    let forPeer: Bool
     var rotateRequested = false
     var exporting = false
 
-    init(source: TriggerSource, window: ClipWindow, fps: Int) {
+    init(source: TriggerSource, window: ClipWindow, fps: Int, id: String, forPeer: Bool = false) {
       self.source = source
       self.window = window
       self.fps = fps
+      self.id = id
+      self.forPeer = forPeer
     }
   }
 
@@ -98,17 +111,15 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   /// Portrait app, back camera: sensor buffers are landscape and rotated 90° on playback.
   private static let portraitTransform = CGAffineTransform(rotationAngle: .pi / 2)
 
-  private lazy var clipsDir: URL = {
-    let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    let dir = docs.appendingPathComponent("swings", isDirectory: true)
-    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    return dir
-  }()
+  private var clipsDir: URL { SwingFiles.clipsDir }
+  /// Camera role: clips for the main phone, deleted once sent.
+  private lazy var peerDir = FileManager.default.temporaryDirectory.appendingPathComponent("peer", isDirectory: true)
 
   private lazy var chunkDir = FileManager.default.temporaryDirectory.appendingPathComponent("swing-chunks", isDirectory: true)
 
   private override init() {
     super.init()
+    peers.host = self
     let center = NotificationCenter.default
     center.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { [weak self] _ in
       self?.queue.async { self?.handleThermal() }
@@ -160,6 +171,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   /// Returns true if the trigger was accepted. `time` defaults to now (button presses).
   @discardableResult
   func trigger(_ source: TriggerSource, at time: Double? = nil) -> Bool {
+    // A camera phone saves only what the main phone asks for (captureForPeer).
+    if peers.role == .camera { return false }
     lock.lock()
     let current = _state
     // A button / remote / watch press in standby means "I'm back": wake rather than save.
@@ -178,20 +191,48 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       return false
     }
     lastTrigger = t
-    let clip = PendingClip(source: source, window: ClipWindows.forTrigger(source, at: t, config: cfg), fps: _activeFps)
+    let clip = PendingClip(
+      source: source,
+      window: ClipWindows.forTrigger(source, at: t, config: cfg),
+      fps: _activeFps,
+      id: "swing_\(Int64(Date().timeIntervalSince1970 * 1000))"
+    )
     _state = .triggered
     let format = _format
     lock.unlock()
 
-    listener?.engineStateChanged(.triggered, format: format)
+    announce(.triggered, format: format)
     listener?.engineTriggered(source, timeMs: t * 1000)
+    startPending(clip)
+    if peers.role == .main { peers.sendTrigger(id: clip.id, window: clip.window) }
+    return true
+  }
+
+  /// Camera role: the main phone triggered; save `window` (already on our clock) as clip `id` and send
+  /// it back. No cooldown or quota here: the main phone applied them. False if we're not recording.
+  func captureForPeer(id: String, window: ClipWindow) -> Bool {
+    lock.lock()
+    guard _state == .armed, _config != nil else {
+      lock.unlock()
+      return false
+    }
+    let clip = PendingClip(source: .manual, window: window, fps: _activeFps, id: id, forPeer: true)
+    _state = .triggered
+    let format = _format
+    lock.unlock()
+
+    announce(.triggered, format: format)
+    startPending(clip)
+    return true
+  }
+
+  private func startPending(_ clip: PendingClip) {
     queue.async {
       self.pending = clip
       // Never leave the UI stuck on "Saving" if frames stop or a chunk fails to finish.
       let wait = max(0, clip.window.end - self.now()) + Self.exportWatchdog
       self.queue.asyncAfter(deadline: .now() + wait) { self.abandonIfStuck(clip) }
     }
-    return true
   }
 
   /// Frame rates the back camera offers (≤ 1080p), for the Settings screen.
@@ -445,24 +486,22 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     clip.exporting = true
     setState(.exporting)
     let chunks = recorder.chunks(overlapping: clip.window.start, clip.window.end)
-    let name = "swing_\(Int64(Date().timeIntervalSince1970 * 1000))"
-    let url = clipsDir.appendingPathComponent("\(name).mp4")
+    let url = (clip.forPeer ? peerDir : clipsDir).appendingPathComponent("\(clip.id).mp4")
 
     Task {
       do {
-        let written = try await ClipExporter.export(chunks: chunks, window: clip.window, to: url)
-        let info: [String: Any?] = [
-          "uri": written.url.absoluteString,
-          "thumbUri": written.thumbnail?.absoluteString,
-          "fps": clip.fps,
-          "durationMs": written.duration * 1000,
-          "impactOffsetMs": written.impactOffset.map { $0 * 1000 },
-          "source": clip.source.rawValue,
-        ]
-        var sidecar = info
-        sidecar["createdAt"] = Int64(Date().timeIntervalSince1970 * 1000)
-        ClipExporter.writeSidecar(for: written.url, info: sidecar)
-        self.listener?.engineClipReady(info)
+        let written = try await ClipExporter.export(chunks: chunks, window: clip.window, to: url, thumbnail: !clip.forPeer)
+        if clip.forPeer {
+          self.peers.sendClip(
+            id: clip.id,
+            file: written.url,
+            fps: clip.fps,
+            durationMs: written.duration * 1000,
+            anchorOffsetMs: written.anchorOffset * 1000
+          )
+        } else {
+          self.clipSaved(written, clip: clip)
+        }
       } catch {
         self.listener?.engineError(code: "E_EXPORT", message: error.localizedDescription)
       }
@@ -472,6 +511,23 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         if self.state == .exporting { self.setState(.armed) }
       }
     }
+  }
+
+  private func clipSaved(_ written: WrittenClip, clip: PendingClip) {
+    let info: [String: Any?] = [
+      "id": clip.id,
+      "uri": written.url.absoluteString,
+      "thumbUri": written.thumbnail?.absoluteString,
+      "fps": clip.fps,
+      "durationMs": written.duration * 1000,
+      "impactOffsetMs": written.impactOffset.map { $0 * 1000 },
+      "anchorOffsetMs": written.anchorOffset * 1000,
+      "source": clip.source.rawValue,
+    ]
+    var sidecar = info
+    sidecar["createdAt"] = Int64(Date().timeIntervalSince1970 * 1000)
+    ClipExporter.writeSidecar(for: written.url, info: sidecar)
+    listener?.engineClipReady(info)
   }
 
   private func abandonIfStuck(_ clip: PendingClip) {
@@ -532,7 +588,13 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     _state = next
     let format = next == .idle ? nil : _format
     lock.unlock()
-    listener?.engineStateChanged(next, format: format)
+    announce(next, format: format)
+  }
+
+  /// Tells JS and the paired phone (which shows it, and as a camera phone follows the main's standby).
+  private func announce(_ state: EngineState, format: [String: Any]?) {
+    peers.onEngineState(state)
+    listener?.engineStateChanged(state, format: format)
   }
 
   private func now() -> Double {
@@ -615,5 +677,46 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       return false
     }
     return ok ? (out, asbd.mSampleRate) : nil
+  }
+}
+
+// MARK: - PeerLinkHost (PeerLink's queue)
+
+extension CaptureEngine: PeerLinkHost {
+  func peerNowUs() -> Int64 {
+    Int64((now() * 1_000_000).rounded())
+  }
+
+  func peerFps() -> Int {
+    locked { _activeFps > 0 ? _activeFps : (_config?.fps ?? 0) }
+  }
+
+  func peerEngineState() -> EngineState {
+    state
+  }
+
+  func peerTrigger(id: String, window: ClipWindow) -> Bool {
+    captureForPeer(id: id, window: window)
+  }
+
+  /// No main phone recording means nothing to save: idle in standby until it is.
+  func peerMainState(_ state: String) {
+    setStandby(state == EngineState.standby.rawValue || state == EngineState.idle.rawValue)
+  }
+
+  func peerAngleReady(id: String) {
+    listener?.engineAngleReady(id: id)
+  }
+
+  func peerStatus(_ status: PeerLink.Status) {
+    listener?.enginePeerStatus(status)
+  }
+
+  func peersFound(_ peers: [PeerLink.PeerInfo]) {
+    listener?.enginePeersFound(peers)
+  }
+
+  func peerError(code: String, message: String) {
+    listener?.engineError(code: code, message: message)
   }
 }

@@ -1,7 +1,11 @@
 package app.simpleswing.capture
 
-/** Which span of the rolling buffer becomes the saved clip. */
-data class ClipWindow(val startUs: Long, val endUs: Long, val impactUs: Long?)
+/**
+ * Which span of the rolling buffer becomes the saved clip. [anchorUs] is the trigger instant (the
+ * impact, or the button press); a paired camera phone gets the same instant on its own clock, so
+ * the two angles line up on it.
+ */
+data class ClipWindow(val startUs: Long, val endUs: Long, val impactUs: Long?, val anchorUs: Long)
 
 object ClipWindows {
   /** Margin kept in the ring beyond the longest clip, so post-roll and export never race pruning. */
@@ -19,11 +23,13 @@ object ClipWindows {
         startUs = triggerUs - config.preRollUs,
         endUs = triggerUs + config.postRollUs,
         impactUs = triggerUs,
+        anchorUs = triggerUs,
       )
       else -> ClipWindow(
         startUs = triggerUs - config.lookbackUs,
         endUs = triggerUs + MANUAL_TAIL_US,
         impactUs = null,
+        anchorUs = triggerUs,
       )
     }
 

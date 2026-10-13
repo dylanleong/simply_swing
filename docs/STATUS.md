@@ -1,6 +1,6 @@
 # SimpleSwing: status and hand-over
 
-_Last updated 2026-10-12. The plan is in [`PLAN.md`](PLAN.md); this file records what has actually been built, what was learned on real devices, and what comes next._
+_Last updated 2026-10-13. The plan is in [`PLAN.md`](PLAN.md); this file records what has actually been built, what was learned on real devices, and what comes next._
 
 ## Where we are
 
@@ -12,6 +12,7 @@ _Last updated 2026-10-12. The plan is in [`PLAN.md`](PLAN.md); this file records
 | Swings library, review (speeds, frame step), multi-delete | ✅ Verified | Shared JS |
 | Save to Photos / Share (slow-motion export) | ✅ Built | 🟡 Ported (re-encodes; see below) |
 | Settings (fps, clip length, sensitivity, sharp, battery, storage) | ✅ Built | Shared JS |
+| Second phone as a second camera (multicam) | 🟡 Built and unit-tested, **never run on a phone** (the release build was interrupted) | 🟡 Ported, never compiled |
 | Watch: tap-to-save remote | 🟡 Wear OS app built (`wear/`), never run on a watch | ⬜ Apple Watch: Phase 6 |
 | Watch: wrist swing detection + sound fusion | 🟡 Built and unit-tested, **never run on a watch** (OnePlus Watch 2R to come) | ⬜ Phase 6 (needs HealthKit, paid account) |
 | Purchases / paywall | ⬜ | ⬜ |
@@ -50,6 +51,60 @@ _Last updated 2026-10-12. The plan is in [`PLAN.md`](PLAN.md); this file records
   - The Levels panel shows the watch status and the last wrist peak in °/s.
 - **To tune on a real watch:** `SwingDetector.peakDps` (700°/s) and `minBackswingNs` (0.3 s), and the fusion window (0.15 s) and wait (0.5 s).
 
+## Second camera (multicam)
+
+A second phone running SimpleSwing films another angle of the same swing (face on or down the line). Both clips are saved together, and review plays them side by side.
+
+### How it works
+
+- **Roles:**
+  - **Main phone:** the one you swing with. It triggers as usual and drives the camera phone. Turn it on from **+ Cam** on the Capture screen.
+  - **Camera phone:** started from **Settings → Second camera → Use this phone as the camera**. It ignores its own triggers (impact sound, buttons, watch) and saves only what the main phone asks for. It goes into and out of standby with the main phone.
+- **Link:**
+  - The camera phone listens on TCP **47800** (or any free port if that one is taken) and advertises `_simpleswing._tcp` over mDNS/Bonjour.
+  - The main phone lists the camera phones it finds. If discovery fails, type the address the camera phone shows.
+  - The main phone reconnects on its own to the last camera phone it used.
+  - Same Wi-Fi or one phone's hotspot. Nothing leaves the local network.
+- **Protocol** (`PeerProtocol.kt` / `.swift`, `scripts/multicam-peer.py`, keep all three in step):
+  - Frames are `u8 type | u32 big-endian length | payload`. Payloads are JSON, except clip bytes, which go in 64 KB `DATA` chunks.
+  - `HELLO`, `PING`/`PONG` (every second), `STATE`, `TRIGGER`, `REJECT`, `CLIP` + `DATA`… + `DONE`, `BYE`.
+  - The link drops after 6 s of silence.
+- **Clock sync** (`ClockSync`): NTP style, using the capture clocks on both phones.
+  - It keeps the last 20 pings and uses the one with the smallest round trip. The error is half that round trip, shown as "±N ms".
+  - A sample that jumps by more than any round trip could explain (a camera restart switching clock base) starts the estimate afresh.
+- **Alignment:**
+  - When the main phone accepts a trigger, it picks the clip id (`swing_<epochMs>`). It sends the clip window and the **anchor** (the impact, or the button press) converted to the camera phone's clock.
+  - Each clip records `anchorOffsetMs`, the anchor's position in the clip. Review maps `tB = tA − anchorA + anchorB + nudgeB`.
+  - The camera phone saves the clip to a temporary folder, streams it back and deletes it.
+- **Files on the main phone:** `swing_<id>.b.mp4` (written as `.part`, then renamed) and `swing_<id>.b.json`: `{fps, durationMs, anchorOffsetMs, view, deviceName, syncMs, nudgeMs}`. The main clip is saved even if the angle never arrives. The "Angle 2 ◀ ▶" nudge in review is saved back to `.b.json`.
+- **Errors shown to the user:**
+  - `E_PEER_MISSED`: the camera phone wasn't armed.
+  - `E_PEER_CLIP`: the transfer was cut short.
+  - `E_PEER_VERSION`: the two phones run different app versions.
+  - `E_PEER_PERMISSION` (iOS): the Local Network permission was refused.
+- **Not done yet:** a real two-phone run, the paywall gate (it's a paid add-on in the plan), and Save/Share of both angles side by side.
+
+### Testing with one phone (Android, over adb)
+
+`scripts/multicam-peer.py` stands in for the other phone (see its docstring):
+
+- **HONOR as main:** `adb reverse tcp:47800 tcp:47800`, then `scripts/multicam-peer.py camera --clip <some.mp4>`. On the phone, tap **+ Cam** and enter `127.0.0.1`. The pill should show connected with a sensible ±ms. Press SAVE or clap.
+  - Check that `swing_<id>.b.mp4` and `.b.json` arrive (`adb shell run-as app.simpleswing ls files/swings`).
+  - Check the library shows "2 angles" and review plays both, with frame step and nudge working.
+- **HONOR as camera:** Settings → Use this phone as the camera. Then `adb forward tcp:47800 tcp:47800` and `scripts/multicam-peer.py main --host 127.0.0.1 --trigger-every 10 --out /tmp/angles`.
+  - Clips should arrive with `anchorOffsetMs` ≈ 3000 for impacts, and `ffprobe` should show 120 fps with audio.
+- **Discovery:** `avahi-browse -r _simpleswing._tcp` should list the phone while it's in camera mode (if the VM's network bridging passes mDNS).
+- **Then, with two real phones:** film one clap from both. In review, the clap frame should line up within about a frame. If it doesn't, it's the sync or the anchor maths, not the nudge.
+
+### iOS specifics
+
+- Built on Network.framework: an `NWListener` with a Bonjour service, an `NWBrowser`, and `NWConnection`. `includePeerToPeer` is on, so two iPhones can also link over AWDL without a shared Wi-Fi.
+- `app.json` declares `NSLocalNetworkUsageDescription` and `NSBonjourServices`. iOS asks for Local Network permission the first time either role starts.
+- Bonjour results aren't resolved, so found iPhones show no IP in the list (`PeerInfo.host` is empty). Connections go to the service by name.
+- The device name is "iPhone" / "iPad" unless the app gets Apple's device-name entitlement. Two iPhones of the same kind show up as "iPhone" and "iPhone (2)".
+- iOS stops the camera when the app is in the background, so **both phones must stay in the app**. A backgrounded camera phone goes idle, and the main phone reports misses.
+- `ClockSync.swift` and `PeerProtocol.swift` were compiled and tested on Linux in Docker (`swift:5.10`), including frames exchanged with the Python peer. `PeerLink.swift` and the engine changes need Network and AVFoundation, so they were only syntax-checked.
+
 ## Code map
 
 - `src/app/(tabs)/index.tsx`: Capture screen (status pill and hint, golfer box, levels panel, replay overlay, bottom controls, idle/standby).
@@ -66,6 +121,7 @@ _Last updated 2026-10-12. The plan is in [`PLAN.md`](PLAN.md); this file records
     | `ImpactDetector`, `MotionGate` | Impact sound and golfer-box motion |
     | `VolumeKeyInterceptor` | Volume and remote keys, plus touch-mute |
     | `WearBridge` | Link to the Wear OS app |
+    | `PeerLink`, `PeerProtocol`, `ClockSync` | Second-camera link: discovery, socket, messages, clock sync |
 
     JUnit tests live in `android/src/test`.
   - `ios/` (Swift):
@@ -77,10 +133,16 @@ _Last updated 2026-10-12. The plan is in [`PLAN.md`](PLAN.md); this file records
     | `ClipExporter` | Stitch and trim (passthrough), thumbnail, sidecar, slow-motion (re-encode) |
     | `ImpactDetector`, `MotionGate` | Line-for-line ports of the Kotlin versions |
     | `SwingCaptureView` | Preview layer, and volume keys via `AVCaptureEventInteraction` (iOS 17.2+) |
+    | `PeerLink`, `PeerProtocol`, `ClockSync` | Second-camera link on Network.framework (ports of the Kotlin) |
 - `wear/`: standalone Wear OS Gradle project. It uses the same `applicationId` and signing key as the phone app, which the Wear Data Layer requires.
   - `MainActivity` is the SAVE button screen.
   - `SwingSensorService` and `SwingDetector` do the wrist sensing (JUnit tests in `wear/src/test`).
   - `WearProtocol` holds the message paths.
+- Multicam JS:
+  - `src/app/camera-mode.tsx`: the camera phone's screen.
+  - `src/hooks/use-main-peer-link.ts` and `src/components/second-camera-sheet.tsx`: the main phone's link and pairing sheet.
+  - `src/lib/multicam.ts`: angle alignment, drift correction and labels.
+- `scripts/multicam-peer.py`: a fake second phone for testing over adb.
 - `plugins/with-release-signing.js`: Play bundles are signed with the upload key; sideload APKs stay debug-signed.
 - `scripts/generate-icons.py`: draws every icon size (strobe-swing mark). Run it after changing the design.
 
@@ -128,6 +190,10 @@ Expect compile errors. The Swift was written blind against the SDK 57 sources. P
 - [ ] **Sharp mode:** Levels shows a shutter of 1/1000 s or faster (iOS caps auto-exposure via `activeMaxExposureDuration`).
 - [ ] **Standby:** wakes correctly. **Interruptions:** a phone call or Control Centre camera recovers cleanly.
 - [ ] **Exports:** Save to Photos and Share produce a slow-motion clip (the iOS export re-encodes, so expect a second or two).
+- [ ] **Multicam:**
+  - The Local Network prompt appears, and the iPhone appears in the Android main phone's list (and the other way round).
+  - Clips transfer both ways.
+  - `anchorOffsetMs` in the `.b.json` is sensible: about 3000 for an impact, about 6000 for SAVE with default settings.
 
 ### Not yet on iOS
 
@@ -144,10 +210,11 @@ Expect compile errors. The Swift was written blind against the SDK 57 sources. P
 
 ## Next steps, in order
 
-1. **Range session** with the current Android build. Record Levels readings (dB, "swing P/T", shutter) for your strikes versus neighbours'. Also measure battery and warmth over 1 hour.
-2. **iOS first build** on the Mac and fix compile errors. Then work through the checklist above.
-3. **Tune thresholds** from the range data, on both platforms. The constants are `ImpactDetector.minLevelDb/marginDb` and `MotionGate.minMotion/thresholdFactor`.
-4. **Play policy tidy-up.** Try blocking `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED` and `INTERNET` while confirming Save to Photos still works.
-5. **Purchases.** A £14.99 lifetime unlock via `expo-iap`. The free tier allows 3 auto-saves per session; `src/lib/trigger-quota.ts` is ready to wire to `SwingCapture.setAutoTrigger`.
-6. **Watch.** Pair the OnePlus Watch 2R through OHealth and install `wear/` over wireless ADB. Then tune `SwingDetector` on real swings, and check the clock alignment (log: `Wrist swing peak … one-way … ms`). Apple Watch (WCSession plus a HealthKit workout) on the Mac.
-7. **Store listing,** privacy policy ("Data Not Collected"), screenshots, then closed and TestFlight betas.
+1. **Multicam on the HONOR:** finish the interrupted release build and run the adb tests in "Second camera" above. Then do a real two-phone run.
+2. **Range session** with the current Android build. Record Levels readings (dB, "swing P/T", shutter) for your strikes versus neighbours'. Also measure battery and warmth over 1 hour.
+3. **iOS first build** on the Mac and fix compile errors. Then work through the checklist above.
+4. **Tune thresholds** from the range data, on both platforms. The constants are `ImpactDetector.minLevelDb/marginDb` and `MotionGate.minMotion/thresholdFactor`.
+5. **Play policy tidy-up.** Try blocking `READ_MEDIA_VIDEO` and `READ_MEDIA_VISUAL_USER_SELECTED` while confirming Save to Photos still works. **Keep `INTERNET`:** the second-camera link needs it for local sockets. Nothing leaves the local network, so "Data Not Collected" still holds.
+6. **Purchases.** A £14.99 lifetime unlock via `expo-iap`. The free tier allows 3 auto-saves per session; `src/lib/trigger-quota.ts` is ready to wire to `SwingCapture.setAutoTrigger`.
+7. **Watch.** Pair the OnePlus Watch 2R through OHealth and install `wear/` over wireless ADB. Then tune `SwingDetector` on real swings, and check the clock alignment (log: `Wrist swing peak … one-way … ms`). Apple Watch (WCSession plus a HealthKit workout) on the Mac.
+8. **Store listing,** privacy policy ("Data Not Collected"), screenshots, then closed and TestFlight betas.

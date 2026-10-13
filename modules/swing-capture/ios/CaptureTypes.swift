@@ -87,10 +87,13 @@ struct CaptureConfig {
 }
 
 /// Which span of the rolling buffer becomes the saved clip. Times are capture-clock seconds.
+/// `anchor` is the trigger instant (the impact, or the button press); a paired camera phone gets the
+/// same instant on its own clock, so the two angles line up on it.
 struct ClipWindow {
   let start: Double
   let end: Double
   let impact: Double?
+  let anchor: Double
 }
 
 enum ClipWindows {
@@ -103,15 +106,25 @@ enum ClipWindows {
   static func forTrigger(_ source: TriggerSource, at time: Double, config: CaptureConfig) -> ClipWindow {
     switch source {
     case .impact, .wrist:
-      return ClipWindow(start: time - config.preRoll, end: time + config.postRoll, impact: time)
+      return ClipWindow(start: time - config.preRoll, end: time + config.postRoll, impact: time, anchor: time)
     default:
-      return ClipWindow(start: time - config.lookback, end: time + manualTail, impact: nil)
+      return ClipWindow(start: time - config.lookback, end: time + manualTail, impact: nil, anchor: time)
     }
   }
 
   static func ringWindow(_ config: CaptureConfig) -> Double {
     max(config.preRoll + config.postRoll, config.lookback + manualTail) + ringMargin
   }
+}
+
+enum SwingFiles {
+  /// `Documents/swings`, where clips, thumbnails, sidecars and second angles live (read by swing-store.ts).
+  static let clipsDir: URL = {
+    let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    let dir = docs.appendingPathComponent("swings", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir
+  }()
 }
 
 final class CaptureException: GenericException<String> {

@@ -1,10 +1,26 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
-import { parseSwing, swingsToPrune, type Swing } from './swing-library';
+import { parseSwing, swingsToPrune, type AngleFile, type Swing } from './swing-library';
 
 /** The capture engine writes clips to <app files>/swings (Paths.document on both platforms). */
 function swingsDir() {
   return new Directory(Paths.document, 'swings');
+}
+
+function readText(file: File): string | null {
+  try {
+    return file.textSync();
+  } catch {
+    return null;
+  }
+}
+
+function readAngle(dir: Directory, stem: string): AngleFile {
+  const sidecar = new File(dir, `${stem}.b.json`);
+  return {
+    sidecarJson: sidecar.exists ? readText(sidecar) : null,
+    sizeBytes: new File(dir, `${stem}.b.mp4`).size,
+  };
 }
 
 /** All saved swings, newest first. */
@@ -18,13 +34,9 @@ export function listSwings(): Swing[] {
     if (!f.name.endsWith('.mp4')) continue;
     const stem = f.name.slice(0, -'.mp4'.length);
     const sidecar = names.has(`${stem}.json`) ? new File(dir, `${stem}.json`) : null;
-    let json: string | null = null;
-    try {
-      json = sidecar ? sidecar.textSync() : null;
-    } catch {
-      json = null;
-    }
-    const swing = parseSwing(f.name, dir.uri, json, names.has(`${stem}.jpg`), f.size);
+    const json = sidecar ? readText(sidecar) : null;
+    const angleFile = names.has(`${stem}.b.mp4`) ? readAngle(dir, stem) : null;
+    const swing = parseSwing(f.name, dir.uri, json, names.has(`${stem}.jpg`), f.size, angleFile);
     if (swing) swings.push(swing);
   }
   return swings.sort((a, b) => b.createdAt - a.createdAt);
@@ -34,7 +46,20 @@ export function getSwing(id: string): Swing | null {
   return listSwings().find((s) => s.id === id) ?? null;
 }
 
-/** Removes the clip and its thumbnail / sidecar. */
+/** Saves the review screen's manual alignment of a swing's second angle. */
+export function setAngleNudge(id: string, nudgeMs: number) {
+  const sidecar = new File(swingsDir(), `${id}.b.json`);
+  if (!sidecar.exists) return;
+  let meta: Record<string, unknown> = {};
+  try {
+    meta = JSON.parse(sidecar.textSync());
+  } catch {
+    return; // Unreadable: the angle isn't shown anyway.
+  }
+  sidecar.write(JSON.stringify({ ...meta, nudgeMs }));
+}
+
+/** Removes the clip, its second angle and their thumbnails / sidecars. */
 export function deleteSwing(id: string) {
   deleteSwings([id]);
 }
@@ -49,7 +74,7 @@ export function pruneOldSwings(days: number): number {
 export function deleteSwings(ids: readonly string[]) {
   const dir = swingsDir();
   for (const id of ids) {
-    for (const ext of ['mp4', 'jpg', 'json']) {
+    for (const ext of ['mp4', 'jpg', 'json', 'b.mp4', 'b.json']) {
       const f = new File(dir, `${id}.${ext}`);
       if (f.exists) f.delete();
     }

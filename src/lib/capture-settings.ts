@@ -1,4 +1,4 @@
-import type { NormalizedRect, WatchMode } from '../../modules/swing-capture/src/SwingCapture.types';
+import type { CameraView, NormalizedRect, WatchMode } from '../../modules/swing-capture/src/SwingCapture.types';
 
 export type Sensitivity = 'low' | 'medium' | 'high';
 
@@ -30,6 +30,12 @@ export type CaptureSettings = {
   watchMode: WatchMode;
   /** With the watch sensing, also save swings without an impact sound. */
   savePracticeSwings: boolean;
+  /** Main phone: look for (and reconnect to) a second phone filming another angle. */
+  secondCamera: boolean;
+  /** The camera phone last connected, reconnected to automatically when it's found again. */
+  lastCameraName: string | null;
+  /** This phone's angle when it's used as the second camera. */
+  cameraView: CameraView;
 };
 
 export const FPS_OPTIONS = [60, 120, 240] as const;
@@ -38,6 +44,7 @@ export const LOOKBACK_OPTIONS = [4, 6, 8] as const;
 export const SENSITIVITY_OPTIONS = ['low', 'medium', 'high'] as const;
 export const AUTO_DELETE_OPTIONS = [0, 7, 30] as const;
 export const WATCH_MODE_OPTIONS = ['auto', 'tap', 'off'] as const;
+export const CAMERA_VIEW_OPTIONS = ['faceOn', 'dtl'] as const;
 
 /** Detector sensitivity (0..1) for each user-facing level. */
 export const SENSITIVITY_VALUE: Record<Sensitivity, number> = { low: 0.2, medium: 0.5, high: 0.8 };
@@ -62,6 +69,10 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   autoStandby: true,
   watchMode: 'auto',
   savePracticeSwings: false,
+  secondCamera: false,
+  lastCameraName: null,
+  // The main phone usually sits down the line, where the golfer box works best.
+  cameraView: 'faceOn',
 };
 
 /** Smallest golfer box, as a fraction of the preview on each axis. */
@@ -125,5 +136,8 @@ export function parseSettings(json: string | null): CaptureSettings {
     autoStandby: bool(raw.autoStandby, d.autoStandby),
     watchMode: oneOf(WATCH_MODE_OPTIONS, raw.watchMode, d.watchMode),
     savePracticeSwings: bool(raw.savePracticeSwings, d.savePracticeSwings),
+    secondCamera: bool(raw.secondCamera, d.secondCamera),
+    lastCameraName: typeof raw.lastCameraName === 'string' ? raw.lastCameraName : d.lastCameraName,
+    cameraView: oneOf(CAMERA_VIEW_OPTIONS, raw.cameraView, d.cameraView),
   };
 }

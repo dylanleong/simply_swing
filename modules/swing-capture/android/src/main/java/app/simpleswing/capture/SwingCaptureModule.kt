@@ -62,6 +62,27 @@ class SwingCaptureModule : Module() {
     override fun onThermalDowngrade(fromFps: Int, toFps: Int) =
       sendEvent("onThermalDowngrade", mapOf("fromFps" to fromFps, "toFps" to toFps))
 
+    override fun onPeerStatus(status: PeerLink.Status) =
+      sendEvent(
+        "onPeerStatus",
+        mapOf(
+          "role" to status.role.jsName,
+          "state" to status.state,
+          "peerName" to status.peerName,
+          "peerState" to status.peerState,
+          "syncMs" to status.syncMs,
+          "address" to status.address,
+        ),
+      )
+
+    override fun onPeersFound(peers: List<PeerLink.PeerInfo>) =
+      sendEvent(
+        "onPeersFound",
+        mapOf("peers" to peers.map { mapOf("id" to it.id, "name" to it.name, "host" to it.host, "port" to it.port) }),
+      )
+
+    override fun onAngleReady(id: String) = sendEvent("onAngleReady", mapOf("id" to id))
+
     override fun onError(code: String, message: String) =
       sendEvent("onError", mapOf("code" to code, "message" to message))
   }
@@ -79,6 +100,9 @@ class SwingCaptureModule : Module() {
       "onWatchStatus",
       "onWristSwing",
       "onThermalDowngrade",
+      "onPeerStatus",
+      "onPeersFound",
+      "onAngleReady",
       "onError",
     )
 
@@ -142,6 +166,26 @@ class SwingCaptureModule : Module() {
       val dst = File(dir, "${src.nameWithoutExtension}_slowmo_x$factor.mp4")
       if (!dst.exists() || dst.lastModified() < src.lastModified()) ClipWriter.retime(src, dst, factor)
       "file://${dst.absolutePath}"
+    }
+
+    Function("startMainLink") {
+      engine.peers.startMain()
+      Unit
+    }
+
+    Function("connectPeer") { idOrAddress: String ->
+      engine.peers.connect(idOrAddress)
+      Unit
+    }
+
+    Function("startCameraLink") { view: String ->
+      engine.peers.startCamera(view)
+      Unit
+    }
+
+    Function("stopPeerLink") {
+      engine.peers.stop()
+      Unit
     }
 
     View(SwingCaptureView::class) {}

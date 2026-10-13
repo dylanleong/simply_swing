@@ -18,6 +18,9 @@ public class SwingCaptureModule: Module, CaptureEngineListener {
       "onWatchStatus",
       "onWristSwing",
       "onThermalDowngrade",
+      "onPeerStatus",
+      "onPeersFound",
+      "onAngleReady",
       "onError"
     )
 
@@ -95,6 +98,22 @@ public class SwingCaptureModule: Module, CaptureEngineListener {
       return output.absoluteString
     }
 
+    Function("startMainLink") {
+      self.engine.peers.startMain()
+    }
+
+    Function("connectPeer") { (idOrAddress: String) in
+      self.engine.peers.connect(idOrAddress)
+    }
+
+    Function("startCameraLink") { (view: String) in
+      self.engine.peers.startCamera(view: view)
+    }
+
+    Function("stopPeerLink") {
+      self.engine.peers.stop()
+    }
+
     View(SwingCaptureView.self) {}
   }
 
@@ -133,6 +152,27 @@ public class SwingCaptureModule: Module, CaptureEngineListener {
 
   func engineThermalDowngrade(from: Int, to: Int) {
     sendEvent("onThermalDowngrade", ["fromFps": from, "toFps": to])
+  }
+
+  func enginePeerStatus(_ status: PeerLink.Status) {
+    sendEvent("onPeerStatus", [
+      "role": status.role.rawValue,
+      "state": status.state,
+      "peerName": status.peerName,
+      "peerState": status.peerState,
+      "syncMs": status.syncMs,
+      "address": status.address,
+    ])
+  }
+
+  func enginePeersFound(_ peers: [PeerLink.PeerInfo]) {
+    sendEvent("onPeersFound", [
+      "peers": peers.map { ["id": $0.id, "name": $0.name, "host": $0.host, "port": $0.port] },
+    ])
+  }
+
+  func engineAngleReady(id: String) {
+    sendEvent("onAngleReady", ["id": id])
   }
 
   func engineError(code: String, message: String) {

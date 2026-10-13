@@ -23,6 +23,7 @@ class ClipWindowsTest {
     assertEquals(7_000_000L, w.startUs)
     assertEquals(11_500_000L, w.endUs)
     assertEquals(10_000_000L, w.impactUs)
+    assertEquals(10_000_000L, w.anchorUs)
   }
 
   @Test
@@ -32,6 +33,8 @@ class ClipWindowsTest {
       assertEquals(4_000_000L, w.startUs)
       assertEquals(10_300_000L, w.endUs)
       assertNull(w.impactUs)
+      // A second angle still lines up on the button press.
+      assertEquals(10_000_000L, w.anchorUs)
     }
   }
 

@@ -11,6 +11,15 @@ export const AUTO_TRIGGER_SOURCES: readonly TriggerSource[] = ['watch', 'impact'
 /** auto = the watch senses swings on the wrist; tap = watch SAVE button only; off = ignore the watch. */
 export type WatchMode = 'auto' | 'tap' | 'off';
 
+/** A camera's angle on the golfer: down the line (behind the hands, along the target line) or face on. */
+export type CameraView = 'dtl' | 'faceOn';
+
+/**
+ * Two-phone capture. 'main' triggers as usual and drives a paired 'camera' phone, which saves the same
+ * moments from its own buffer and sends them back as the swing's second angle.
+ */
+export type PeerRole = 'solo' | 'main' | 'camera';
+
 /** Golfer region of interest, normalised 0..1 in preview coordinates. Used by the motion gate. */
 export type NormalizedRect = { x: number; y: number; width: number; height: number };
 
@@ -64,6 +73,8 @@ export type TriggerEvent = {
 };
 
 export type ClipReadyEvent = {
+  /** File stem (`swing_<epochMs>`), shared with the second angle. */
+  id: string;
   uri: string;
   /** JPEG thumbnail beside the clip, or null if frame extraction failed. */
   thumbUri: string | null;
@@ -71,6 +82,8 @@ export type ClipReadyEvent = {
   durationMs: number;
   /** Impact position inside the clip in ms (lets review open on the impact frame); null for non-impact triggers. */
   impactOffsetMs: number | null;
+  /** Position of the trigger instant (impact or button press) inside the clip, in ms; lines up the angles. */
+  anchorOffsetMs: number;
   source: TriggerSource;
 };
 
@@ -104,6 +117,32 @@ export type WristSwingEvent = { peakDps: number };
 /** What auto-exposure chose, ~1 Hz. Faster than 1/1000 s freezes the club. */
 export type ExposureEvent = { shutterSec: number; iso: number | null };
 
+/**
+ * The two-phone link. Main: 'searching' until a camera phone is connected. Camera: 'advertising'
+ * until a main phone connects; `address` is what to type on the main phone if discovery fails.
+ */
+export type PeerStatusEvent = {
+  role: PeerRole;
+  state: 'idle' | 'searching' | 'advertising' | 'connected';
+  peerName: string | null;
+  /** The other phone's engine state (e.g. 'armed'), once connected. */
+  peerState: EngineState | null;
+  /** Clock-sync uncertainty, ± ms; null until measured. */
+  syncMs: number | null;
+  address: string | null;
+};
+
+/**
+ * A camera phone found on the local network (main role). On iOS `host` is '' and `port` 0: Bonjour
+ * services are connected to by name, without resolving an address first.
+ */
+export type PeerInfo = { id: string; name: string; host: string; port: number };
+
+export type PeersFoundEvent = { peers: PeerInfo[] };
+
+/** The second angle of swing [id] has arrived (`<id>.b.mp4`). */
+export type AngleReadyEvent = { id: string };
+
 export type ThermalDowngradeEvent = { fromFps: number; toFps: number };
 
 export type CaptureErrorEvent = { code: string; message: string };
@@ -118,6 +157,9 @@ export type SwingCaptureModuleEvents = {
   onWatchStatus: (event: WatchStatusEvent) => void;
   onWristSwing: (event: WristSwingEvent) => void;
   onThermalDowngrade: (event: ThermalDowngradeEvent) => void;
+  onPeerStatus: (event: PeerStatusEvent) => void;
+  onPeersFound: (event: PeersFoundEvent) => void;
+  onAngleReady: (event: AngleReadyEvent) => void;
   onError: (event: CaptureErrorEvent) => void;
 };
 

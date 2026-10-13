@@ -22,19 +22,32 @@ describe('parseSettings', () => {
       autoStandby: false,
       watchMode: 'tap',
       savePracticeSwings: true,
+      secondCamera: true,
+      lastCameraName: 'Pixel 8',
+      cameraView: 'dtl',
     };
     expect(parseSettings(JSON.stringify(stored))).toEqual(stored);
   });
 
   it('replaces malformed or unsupported fields individually', () => {
     const s = parseSettings(
-      JSON.stringify({ roi: { x: 'left' }, soundTrigger: 'yes', seenHelp: true, fps: 1000, sensitivity: 'max' })
+      JSON.stringify({
+        roi: { x: 'left' },
+        soundTrigger: 'yes',
+        seenHelp: true,
+        fps: 1000,
+        sensitivity: 'max',
+        lastCameraName: 7,
+        cameraView: 'overhead',
+      })
     );
     expect(s.roi).toEqual(DEFAULT_SETTINGS.roi);
     expect(s.soundTrigger).toBe(DEFAULT_SETTINGS.soundTrigger);
     expect(s.seenHelp).toBe(true);
     expect(s.fps).toBe(DEFAULT_SETTINGS.fps);
     expect(s.sensitivity).toBe(DEFAULT_SETTINGS.sensitivity);
+    expect(s.lastCameraName).toBeNull();
+    expect(s.cameraView).toBe(DEFAULT_SETTINGS.cameraView);
   });
 
   it('upgrades settings saved by older versions', () => {

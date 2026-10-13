@@ -185,6 +185,11 @@ function SwingTile({
           selected && { borderColor: theme.accent, borderWidth: 3 },
         ]}>
         {swing.thumbUri && <Image source={swing.thumbUri} style={StyleSheet.absoluteFill} contentFit="cover" />}
+        {swing.angle && (
+          <View style={styles.angles}>
+            <ThemedText style={styles.anglesText}>2 angles</ThemedText>
+          </View>
+        )}
         {selecting && (
           <View
             style={[
@@ -234,6 +239,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  angles: {
+    position: 'absolute',
+    left: Spacing.two,
+    bottom: Spacing.two,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.half,
+    borderRadius: Spacing.two,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  anglesText: { color: '#fff', fontSize: 12, lineHeight: 16, fontWeight: '700' },
   checkEmpty: { borderColor: '#fff', backgroundColor: 'rgba(0,0,0,0.3)' },
   checkMark: { color: '#fff', fontWeight: '700', lineHeight: 20 },
   deleteBar: {
