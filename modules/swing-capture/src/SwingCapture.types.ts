@@ -85,6 +85,9 @@ export type ClipReadyEvent = {
   /** Position of the trigger instant (impact or button press) inside the clip, in ms; lines up the angles. */
   anchorOffsetMs: number;
   source: TriggerSource;
+  /** Tempo of the wrist swing that triggered the clip (watch sensing), else absent / null. */
+  backswingMs?: number | null;
+  downswingMs?: number | null;
 };
 
 /** A sharp sound heard by the impact detector (for on-screen calibration). */
@@ -112,7 +115,8 @@ export type MotionEvent = { level: number; threshold: number };
 export type WatchStatusEvent = { connected: boolean; sensing: boolean };
 
 /** A wrist swing reported by the watch (peak rotation speed). */
-export type WristSwingEvent = { peakDps: number };
+/** A wrist swing; the tempo fields are present when the watch measured them (Wear OS only so far). */
+export type WristSwingEvent = { peakDps: number; backswingMs?: number | null; downswingMs?: number | null };
 
 /** What auto-exposure chose, ~1 Hz. Faster than 1/1000 s freezes the club. */
 export type ExposureEvent = { shutterSec: number; iso: number | null };

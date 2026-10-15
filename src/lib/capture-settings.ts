@@ -1,4 +1,5 @@
 import type { CameraView, NormalizedRect, WatchMode } from '../../modules/swing-capture/src/SwingCapture.types';
+import { CLUBS, type Club } from './swing-notes';
 
 export type Sensitivity = 'low' | 'medium' | 'high';
 
@@ -36,6 +37,8 @@ export type CaptureSettings = {
   lastCameraName: string | null;
   /** This phone's angle when it's used as the second camera. */
   cameraView: CameraView;
+  /** The club in hand: every saved swing is tagged with it until it's changed. */
+  club: Club | null;
 };
 
 export const FPS_OPTIONS = [60, 120, 240] as const;
@@ -73,6 +76,7 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   lastCameraName: null,
   // The main phone usually sits down the line, where the golfer box works best.
   cameraView: 'faceOn',
+  club: null,
 };
 
 /** Smallest golfer box, as a fraction of the preview on each axis. */
@@ -139,5 +143,6 @@ export function parseSettings(json: string | null): CaptureSettings {
     secondCamera: bool(raw.secondCamera, d.secondCamera),
     lastCameraName: typeof raw.lastCameraName === 'string' ? raw.lastCameraName : d.lastCameraName,
     cameraView: oneOf(CAMERA_VIEW_OPTIONS, raw.cameraView, d.cameraView),
+    club: oneOf<Club | null>(CLUBS, raw.club, d.club),
   };
 }

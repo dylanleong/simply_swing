@@ -189,7 +189,7 @@ export default function SettingsScreen() {
                 ? 'No swings saved.'
                 : `${storage.count} swing${storage.count === 1 ? '' : 's'} · ${formatBytes(storage.bytes)} on this phone`}
             </ThemedText>
-            <Setting label="Delete swings older than" help="Swings you saved to Photos are kept there.">
+            <Setting label="Delete swings older than" help="Favourites are never deleted, and swings you saved to Photos stay there.">
               <Segmented
                 accessibilityLabel="Delete swings older than"
                 value={settings.autoDeleteDays}
@@ -197,6 +197,22 @@ export default function SettingsScreen() {
                 options={AUTO_DELETE_OPTIONS.map((d) => ({ value: d, label: d === 0 ? 'Never' : `${d} days` }))}
               />
             </Setting>
+          </Section>
+
+          <Section title="Help">
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => router.push('/help')}
+              style={({ pressed }) => [
+                styles.button,
+                { backgroundColor: theme.backgroundElement, opacity: pressed ? 0.7 : 1 },
+              ]}>
+              <ThemedText>Help & tips</ThemedText>
+            </Pressable>
+            <ThemedText type="small" themeColor="textSecondary">
+              Camera set-up, reading your swing (plane lines, head movement, tempo), tags and
+              troubleshooting.
+            </ThemedText>
           </Section>
 
           <View style={[styles.about, { borderTopColor: theme.backgroundSelected }]}>

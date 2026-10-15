@@ -11,6 +11,9 @@ export default function RootLayout() {
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="swing/[id]" options={{ title: 'Swing', headerBackTitle: 'Swings' }} />
           <Stack.Screen name="camera-mode" options={{ headerShown: false }} />
+          <Stack.Screen name="compare-pick" options={{ title: 'Compare with…' }} />
+          <Stack.Screen name="compare" options={{ title: 'Compare' }} />
+          <Stack.Screen name="help" options={{ title: 'Help & tips' }} />
         </Stack>
       </ThemeProvider>
     </GestureHandlerRootView>

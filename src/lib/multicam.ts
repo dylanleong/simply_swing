@@ -27,11 +27,52 @@ export function angleShiftSec(swing: Pick<Swing, 'anchorOffsetMs'>, angle: Angle
   return (angle.anchorOffsetMs + angle.nudgeMs - (swing.anchorOffsetMs ?? 0)) / 1000;
 }
 
+/**
+ * How a second clip follows the first: at `tA` seconds into the first it shows `tA + shiftSec`
+ * (clamped to its own length). Used for a swing's two angles and for comparing two swings.
+ */
+export type Link = { shiftSec: number; durationSec: number | null; fps: number | null };
+
+export function linkedTimeSec(tA: number, link: Link): number {
+  const end = link.durationSec ?? Infinity;
+  return Math.min(Math.max(0, tA + link.shiftSec), end);
+}
+
+/** Seconds to seek the second clip by to bring it back in line, or 0 if it's within one of its frames. */
+export function linkDriftSec(posA: number, posB: number, link: Link): number {
+  const drift = linkedTimeSec(posA, link) - posB;
+  return Math.abs(drift) > 1 / (link.fps ?? 120) ? drift : 0;
+}
+
+/** A swing's second angle, lined up on the shared anchor (plus the review nudge). */
+export function angleLink(swing: Pick<Swing, 'anchorOffsetMs'>, angle: Angle): Link {
+  return {
+    shiftSec: angleShiftSec(swing, angle),
+    durationSec: angle.durationMs == null ? null : angle.durationMs / 1000,
+    fps: angle.fps,
+  };
+}
+
+/** The moment two different swings are lined up on: impact if known, else the trigger. */
+export const swingAnchorMs = (s: Pick<Swing, 'impactOffsetMs' | 'anchorOffsetMs'>) =>
+  s.impactOffsetMs ?? s.anchorOffsetMs ?? 0;
+
+/** Swing [b] following swing [a], lined up on their impacts, nudged by [nudgeMs]. */
+export function compareLink(
+  a: Pick<Swing, 'impactOffsetMs' | 'anchorOffsetMs'>,
+  b: Pick<Swing, 'impactOffsetMs' | 'anchorOffsetMs' | 'durationMs' | 'fps'>,
+  nudgeMs = 0
+): Link {
+  return {
+    shiftSec: (swingAnchorMs(b) - swingAnchorMs(a) + nudgeMs) / 1000,
+    durationSec: b.durationMs == null ? null : b.durationMs / 1000,
+    fps: b.fps,
+  };
+}
+
 /** Where the second angle should be when the main clip is at [tA] seconds (clamped to the clip). */
 export function angleTimeSec(tA: number, swing: Pick<Swing, 'anchorOffsetMs'>, angle: Angle): number {
-  const t = tA + angleShiftSec(swing, angle);
-  const end = angle.durationMs == null ? Infinity : angle.durationMs / 1000;
-  return Math.min(Math.max(0, t), end);
+  return linkedTimeSec(tA, angleLink(swing, angle));
 }
 
 /** Review shows both angles, or one of them full size. */
@@ -64,8 +105,7 @@ export function driftCorrectionSec(
   swing: Pick<Swing, 'anchorOffsetMs'>,
   angle: Angle
 ): number {
-  const drift = angleTimeSec(posA, swing, angle) - posB;
-  return Math.abs(drift) > 1 / (angle.fps ?? 120) ? drift : 0;
+  return linkDriftSec(posA, posB, angleLink(swing, angle));
 }
 
 /** "±2 ms" for the sync readout; under 1 ms reads as "±1 ms" (sub-frame either way). */

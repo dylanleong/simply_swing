@@ -1,4 +1,5 @@
 import type { CameraView, TriggerSource } from '../../modules/swing-capture/src/SwingCapture.types';
+import { parseNotes, type Club, type ShotResult, type SwingNotes } from './swing-notes';
 
 /** The second camera's clip of a swing (`swing_<epochMs>.b.mp4` + `.b.json`), from a paired phone. */
 export type Angle = {
@@ -15,6 +16,26 @@ export type Angle = {
   /** Manual alignment correction from the review screen. */
   nudgeMs: number;
 };
+
+/** Swing timing from the watch: takeaway → top, top → impact. */
+export type Tempo = { backswingMs: number; downswingMs: number };
+
+/** Both parts, positive, or null. */
+export function parseTempo(backswingMs: unknown, downswingMs: unknown): Tempo | null {
+  const b = numberOrNull(backswingMs);
+  const d = numberOrNull(downswingMs);
+  return b != null && d != null && b > 0 && d > 0 ? { backswingMs: b, downswingMs: d } : null;
+}
+
+/** "3.1 : 1" — backswing time over downswing time. Tour players cluster around 3 : 1. */
+export function formatTempoRatio(t: Tempo): string {
+  return `${(t.backswingMs / t.downswingMs).toFixed(1)} : 1`;
+}
+
+/** "Tempo 3.1 : 1 · backswing 0.81 s" */
+export function formatTempo(t: Tempo): string {
+  return `Tempo ${formatTempoRatio(t)} · backswing ${(t.backswingMs / 1000).toFixed(2)} s`;
+}
 
 /** What the store found on disk for a swing's second angle. */
 export type AngleFile = { sidecarJson: string | null; sizeBytes: number | null };
@@ -35,6 +56,10 @@ export type Swing = {
   /** Video file size (both angles), for the storage summary. */
   sizeBytes: number | null;
   angle: Angle | null;
+  /** From the watch, when it sensed the swing. */
+  tempo: Tempo | null;
+  /** The golfer's tags, favourite and drawings (`.user.json`). */
+  notes: SwingNotes;
 };
 
 const CLIP_NAME = /^(swing_(\d+))\.mp4$/;
@@ -81,7 +106,8 @@ export function parseSwing(
   sidecarJson: string | null,
   hasThumb: boolean,
   sizeBytes: number | null = null,
-  angleFile: AngleFile | null = null
+  angleFile: AngleFile | null = null,
+  notesJson: string | null = null
 ): Swing | null {
   const match = CLIP_NAME.exec(fileName);
   if (!match) return null;
@@ -105,15 +131,67 @@ export function parseSwing(
     source: SOURCES.includes(meta.source as TriggerSource) ? (meta.source as TriggerSource) : null,
     sizeBytes: sizeBytes == null ? null : sizeBytes + (angleFile?.sizeBytes ?? 0),
     angle,
+    tempo: parseTempo(meta.backswingMs, meta.downswingMs),
+    notes: parseNotes(notesJson),
   };
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Swings older than [days] (0 = keep everything). */
+/** Swings older than [days] (0 = keep everything). Favourites are always kept. */
 export function swingsToPrune(swings: readonly Swing[], days: number, now = Date.now()): string[] {
   if (days <= 0) return [];
-  return swings.filter((s) => now - s.createdAt > days * DAY_MS).map((s) => s.id);
+  return swings.filter((s) => !s.notes.favorite && now - s.createdAt > days * DAY_MS).map((s) => s.id);
+}
+
+/** The library's filter: null fields match everything. */
+export type SwingFilter = { club: Club | null; result: ShotResult | null; favorites: boolean };
+
+export const NO_FILTER: SwingFilter = { club: null, result: null, favorites: false };
+
+export function filterSwings(swings: readonly Swing[], filter: SwingFilter): Swing[] {
+  return swings.filter(
+    (s) =>
+      (filter.club == null || s.notes.club === filter.club) &&
+      (filter.result == null || s.notes.result === filter.result) &&
+      (!filter.favorites || s.notes.favorite)
+  );
+}
+
+/** A break this long between swings starts a new practice session. */
+export const SESSION_GAP_MS = 45 * 60 * 1000;
+
+export type Session = { start: number; end: number; swings: Swing[] };
+
+/** Groups newest-first swings into sessions, newest first; swings inside stay newest first. */
+export function groupSessions(swings: readonly Swing[], gapMs = SESSION_GAP_MS): Session[] {
+  const sessions: Session[] = [];
+  for (const swing of swings) {
+    const current = sessions[sessions.length - 1];
+    if (current && current.start - swing.createdAt <= gapMs) {
+      current.swings.push(swing);
+      current.start = swing.createdAt;
+    } else {
+      sessions.push({ start: swing.createdAt, end: swing.createdAt, swings: [swing] });
+    }
+  }
+  return sessions;
+}
+
+/** "Today · 14:14–15:26" / "12 Oct · 09:30" for a session header. */
+export function formatSession(session: Pick<Session, 'start' | 'end'>, now = Date.now()): string {
+  const time = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const start = new Date(session.start);
+  const today = new Date(now);
+  const yesterday = new Date(now - DAY_MS);
+  const day =
+    start.toDateString() === today.toDateString()
+      ? 'Today'
+      : start.toDateString() === yesterday.toDateString()
+        ? 'Yesterday'
+        : start.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  const range = session.end - session.start < 60_000 ? time(session.start) : `${time(session.start)}–${time(session.end)}`;
+  return `${day} · ${range}`;
 }
 
 export function formatBytes(bytes: number): string {

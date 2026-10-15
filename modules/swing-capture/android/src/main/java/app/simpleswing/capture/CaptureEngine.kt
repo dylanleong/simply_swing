@@ -47,7 +47,7 @@ interface EngineListener {
   /** Watch reachable / wrist swing sensing active (auto mode, heartbeats arriving). */
   fun onWatchStatus(connected: Boolean, sensing: Boolean)
   /** A wrist swing from the watch, for the Levels panel. */
-  fun onWristSwing(peakDps: Int)
+  fun onWristSwing(peakDps: Int, tempo: WristTempo?)
   /** Every sharp sound the detector hears, accepted or not, for on-screen calibration. */
   fun onSound(levelDb: Double, minLevelDb: Double, accepted: Boolean, reason: String?, motion: MotionGate.Verdict?)
   /** Golfer-box motion level, ~2 Hz, for framing and calibration. */
@@ -120,6 +120,8 @@ class CaptureEngine private constructor(private val context: Context) {
     onWristSwing = ::onWristSwing,
     onStatus = { connected, sensing -> listener?.onWatchStatus(connected, sensing) },
   )
+  /** Tempo of recent wrist swings, attached to the clips they trigger. */
+  private val tempos = TempoLog()
   /** Link to a second phone: drives it as a camera (main role) or is driven by one (camera role). */
   val peers = PeerLink(context, { clipsDir }, PeerHost())
   /** Sound + wrist decisions while the watch is sensing (guarded by itself). */
@@ -489,12 +491,13 @@ class CaptureEngine private constructor(private val context: Context) {
     applyFusion(decisions)
   }
 
-  private fun onWristSwing(ageMs: Long, oneWayMs: Long, peakDps: Int) {
+  private fun onWristSwing(ageMs: Long, oneWayMs: Long, peakDps: Int, tempo: WristTempo?) {
     if (state == EngineState.IDLE) return
-    listener?.onWristSwing(peakDps)
+    listener?.onWristSwing(peakDps, tempo)
     // The swing peaked ageMs before the watch sent it, plus the radio hop to us.
     val peakUs = clock.nowUs() - (ageMs + oneWayMs) * 1000
-    Log.d(TAG, "Wrist swing peak $peakDps°/s at $peakUs (age $ageMs ms, one-way $oneWayMs ms)")
+    tempo?.let { tempos.add(peakUs, it) }
+    Log.d(TAG, "Wrist swing peak $peakDps°/s at $peakUs (age $ageMs ms, one-way $oneWayMs ms, tempo $tempo)")
     val decisions = synchronized(fusion) { fusion.onWrist(peakUs, clock.nowUs()) }
     applyFusion(decisions)
   }
@@ -701,6 +704,12 @@ class CaptureEngine private constructor(private val context: Context) {
       val clip = ClipWriter.write(
         file, vf, video, audioFormat, audio, p.format.sensorOrientation, p.window.impactUs, p.window.anchorUs,
       )
+      // The wrist swing that set this clip off (sound + wrist, or a practice swing) knows its tempo.
+      val tempo = if (p.source == TriggerSource.IMPACT || p.source == TriggerSource.WRIST) {
+        tempos.near(p.window.anchorUs)
+      } else {
+        null
+      }
       val info = mapOf(
         "id" to p.id,
         "uri" to "file://${clip.file.absolutePath}",
@@ -710,6 +719,8 @@ class CaptureEngine private constructor(private val context: Context) {
         "impactOffsetMs" to clip.impactOffsetUs?.let { it / 1000.0 },
         "anchorOffsetMs" to clip.anchorOffsetUs / 1000.0,
         "source" to p.source.jsName,
+        "backswingMs" to tempo?.backswingMs,
+        "downswingMs" to tempo?.downswingMs,
       )
       ClipWriter.writeSidecar(clip.file, info + ("createdAt" to System.currentTimeMillis()))
       wear.broadcastSaved()

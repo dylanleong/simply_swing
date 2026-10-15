@@ -1,4 +1,18 @@
-import { formatBytes, formatClipTime, parseSwing, swingsToPrune, type Swing } from '../swing-library';
+import {
+  filterSwings,
+  formatBytes,
+  formatClipTime,
+  formatSession,
+  formatTempo,
+  formatTempoRatio,
+  groupSessions,
+  NO_FILTER,
+  parseSwing,
+  parseTempo,
+  swingsToPrune,
+  type Swing,
+} from '../swing-library';
+import { EMPTY_NOTES } from '../swing-notes';
 
 const DIR = 'file:///data/user/0/app.simpleswing/files/swings';
 
@@ -23,6 +37,8 @@ describe('parseSwing', () => {
       source: 'impact',
       sizeBytes: 15_000_000,
       angle: null,
+      tempo: null,
+      notes: EMPTY_NOTES,
     });
   });
 
@@ -94,6 +110,80 @@ describe('swingsToPrune', () => {
   it('selects only swings older than the limit', () => {
     const swings = [swing('fresh', 1), swing('edge', 7), swing('old', 8)];
     expect(swingsToPrune(swings, 7, now)).toEqual(['old']);
+  });
+
+  it('never deletes a favourite', () => {
+    const fav = { ...swing('fav', 90), notes: { ...EMPTY_NOTES, favorite: true } };
+    expect(swingsToPrune([fav, swing('old', 90)], 7, now)).toEqual(['old']);
+  });
+});
+
+describe('tempo', () => {
+  it('reads the watch tempo from the sidecar', () => {
+    const json = JSON.stringify({ source: 'impact', backswingMs: 810, downswingMs: 270 });
+    const s = parseSwing('swing_1.mp4', DIR, json, false);
+    expect(s?.tempo).toEqual({ backswingMs: 810, downswingMs: 270 });
+    expect(formatTempoRatio(s!.tempo!)).toBe('3.0 : 1');
+    expect(formatTempo(s!.tempo!)).toBe('Tempo 3.0 : 1 · backswing 0.81 s');
+  });
+
+  it('is null when missing or nonsense', () => {
+    expect(parseTempo(null, null)).toBeNull();
+    expect(parseTempo(800, 0)).toBeNull();
+    expect(parseTempo('800', 270)).toBeNull();
+  });
+});
+
+describe('notes on a swing', () => {
+  it('reads the .user.json beside the clip', () => {
+    const notes = JSON.stringify({ club: '7i', result: 'slice', favorite: true });
+    const s = parseSwing('swing_1.mp4', DIR, null, false, null, null, notes);
+    expect(s?.notes).toMatchObject({ club: '7i', result: 'slice', favorite: true });
+  });
+});
+
+describe('filterSwings', () => {
+  const make = (id: string, club: string | null, result: string | null, favorite = false) =>
+    parseSwing(`swing_${id}.mp4`, DIR, null, false, null, null, JSON.stringify({ club, result, favorite }))!;
+  const swings = [make('1', '7i', 'slice'), make('2', '7i', 'good', true), make('3', 'D', 'slice')];
+
+  it('matches everything with no filter', () => {
+    expect(filterSwings(swings, NO_FILTER)).toHaveLength(3);
+  });
+
+  it('combines club, result and favourites', () => {
+    expect(filterSwings(swings, { ...NO_FILTER, result: 'slice' }).map((s) => s.id)).toEqual(['swing_1', 'swing_3']);
+    expect(filterSwings(swings, { ...NO_FILTER, club: '7i', result: 'slice' }).map((s) => s.id)).toEqual(['swing_1']);
+    expect(filterSwings(swings, { ...NO_FILTER, favorites: true }).map((s) => s.id)).toEqual(['swing_2']);
+  });
+});
+
+describe('groupSessions', () => {
+  const min = 60 * 1000;
+  const at = (t: number) => parseSwing(`swing_${t}.mp4`, DIR, null, false)!;
+
+  it('splits on long breaks and keeps newest first', () => {
+    const swings = [at(300 * min), at(290 * min), at(280 * min), at(100 * min), at(95 * min)];
+    const sessions = groupSessions(swings);
+    expect(sessions.map((s) => s.swings.length)).toEqual([3, 2]);
+    expect(sessions[0]).toMatchObject({ start: 280 * min, end: 300 * min });
+    expect(sessions[1]).toMatchObject({ start: 95 * min, end: 100 * min });
+  });
+
+  it('is empty for no swings', () => {
+    expect(groupSessions([])).toEqual([]);
+  });
+});
+
+describe('formatSession', () => {
+  it('names today and shows the time range', () => {
+    const now = new Date(2026, 9, 15, 18, 0).getTime();
+    const start = new Date(2026, 9, 15, 14, 14).getTime();
+    const end = new Date(2026, 9, 15, 15, 26).getTime();
+    expect(formatSession({ start, end }, now)).toMatch(/^Today · .+–.+$/);
+    expect(formatSession({ start: start - 24 * 60 * 60 * 1000, end: start - 24 * 60 * 60 * 1000 }, now)).toMatch(
+      /^Yesterday · [^–]+$/
+    );
   });
 });
 

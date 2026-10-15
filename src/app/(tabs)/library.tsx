@@ -1,29 +1,31 @@
-import { Image } from 'expo-image';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { Alert, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { SwingBrowser } from '@/components/swing-browser';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { formatClipTime, SOURCE_LABEL, type Swing } from '@/lib/swing-library';
+import { filterSwings, NO_FILTER, type Swing, type SwingFilter } from '@/lib/swing-library';
 import { deleteSwings, listSwings } from '@/lib/swing-store';
 
 export default function LibraryScreen() {
   const theme = useTheme();
   const [swings, setSwings] = useState<Swing[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [filter, setFilter] = useState<SwingFilter>(NO_FILTER);
   /** null = browsing; a Set = selection mode (possibly empty). */
   const [selected, setSelected] = useState<Set<string> | null>(null);
   const selecting = selected !== null;
+  const shown = useMemo(() => filterSwings(swings, filter), [swings, filter]);
 
   const reload = useCallback(() => {
     setSwings(listSwings());
   }, []);
 
-  // Clips are added from the Capture tab (and deleted in review), so re-read on every visit.
+  // Clips are added from the Capture tab (and deleted or tagged in review), so re-read on every visit.
   useFocusEffect(
     useCallback(() => {
       reload();
@@ -46,7 +48,8 @@ export default function LibraryScreen() {
       return next;
     });
 
-  const allSelected = selecting && swings.length > 0 && selected.size === swings.length;
+  // "All" means all that the filter shows.
+  const allSelected = selecting && shown.length > 0 && shown.every((s) => selected.has(s.id));
 
   const confirmDelete = () => {
     if (!selected || selected.size === 0) return;
@@ -80,7 +83,7 @@ export default function LibraryScreen() {
             </ThemedText>
             <HeaderButton
               label={allSelected ? 'None' : 'All'}
-              onPress={() => setSelected(allSelected ? new Set() : new Set(swings.map((s) => s.id)))}
+              onPress={() => setSelected(allSelected ? new Set() : new Set(shown.map((s) => s.id)))}
             />
           </View>
         ) : (
@@ -89,32 +92,17 @@ export default function LibraryScreen() {
             {swings.length > 0 && <HeaderButton label="Select" onPress={() => setSelected(new Set())} />}
           </View>
         )}
-        <FlatList
-          data={swings}
-          keyExtractor={(s) => s.id}
-          numColumns={2}
-          columnWrapperStyle={styles.row}
-          contentContainerStyle={[styles.list, selecting && styles.listWithBar]}
+        <SwingBrowser
+          swings={swings}
+          filter={filter}
+          onFilterChange={setFilter}
+          selected={selected}
+          onPress={(s) => (selecting ? toggle(s.id) : router.push({ pathname: '/swing/[id]', params: { id: s.id } }))}
+          onLongPress={(s) => toggle(s.id)}
           refreshing={refreshing}
           onRefresh={onRefresh}
-          extraData={selected}
-          renderItem={({ item }) => (
-            <SwingTile
-              swing={item}
-              selecting={selecting}
-              selected={selected?.has(item.id) ?? false}
-              onPress={() =>
-                selecting ? toggle(item.id) : router.push({ pathname: '/swing/[id]', params: { id: item.id } })
-              }
-              onLongPress={() => toggle(item.id)}
-            />
-          )}
-          ListEmptyComponent={
-            <ThemedText themeColor="textSecondary">
-              No swings yet. On the Capture tab the camera is always recording — hit a ball, or tap
-              Save after your swing to keep the last few seconds.
-            </ThemedText>
-          }
+          bottomInset={selecting ? 72 : 0}
+          empty="No swings yet. On the Capture tab the camera is always recording — hit a ball, or tap Save after your swing to keep the last few seconds."
         />
         {selecting && (
           <View style={[styles.deleteBar, { backgroundColor: theme.background }]}>
@@ -148,68 +136,6 @@ function HeaderButton({ label, onPress }: { label: string; onPress: () => void }
   );
 }
 
-function SwingTile({
-  swing,
-  selecting,
-  selected,
-  onPress,
-  onLongPress,
-}: {
-  swing: Swing;
-  selecting: boolean;
-  selected: boolean;
-  onPress: () => void;
-  onLongPress: () => void;
-}) {
-  const theme = useTheme();
-  const details = [
-    swing.source && SOURCE_LABEL[swing.source],
-    swing.durationMs && `${(swing.durationMs / 1000).toFixed(1)} s`,
-    swing.fps && `${swing.fps} fps`,
-  ]
-    .filter(Boolean)
-    .join(' · ');
-
-  return (
-    <Pressable
-      accessibilityRole={selecting ? 'checkbox' : 'button'}
-      accessibilityState={selecting ? { checked: selected } : undefined}
-      accessibilityLabel={`Swing at ${formatClipTime(swing.createdAt)}`}
-      onPress={onPress}
-      onLongPress={onLongPress}
-      style={({ pressed }) => [styles.tile, { opacity: pressed ? 0.7 : 1 }]}>
-      <View
-        style={[
-          styles.thumb,
-          { backgroundColor: theme.backgroundElement },
-          selected && { borderColor: theme.accent, borderWidth: 3 },
-        ]}>
-        {swing.thumbUri && <Image source={swing.thumbUri} style={StyleSheet.absoluteFill} contentFit="cover" />}
-        {swing.angle && (
-          <View style={styles.angles}>
-            <ThemedText style={styles.anglesText}>2 angles</ThemedText>
-          </View>
-        )}
-        {selecting && (
-          <View
-            style={[
-              styles.check,
-              selected ? { backgroundColor: theme.accent, borderColor: theme.accent } : styles.checkEmpty,
-            ]}>
-            {selected && <ThemedText style={styles.checkMark}>✓</ThemedText>}
-          </View>
-        )}
-      </View>
-      <ThemedText type="smallBold">{formatClipTime(swing.createdAt)}</ThemedText>
-      {details ? (
-        <ThemedText type="small" themeColor="textSecondary">
-          {details}
-        </ThemedText>
-      ) : null}
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: {
@@ -221,36 +147,6 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.two,
   },
   selectTitle: { fontSize: 17 },
-  list: { paddingHorizontal: Spacing.three, paddingBottom: Spacing.four, gap: Spacing.three },
-  // Room for the delete bar so the last row can scroll clear of it.
-  listWithBar: { paddingBottom: 96 },
-  row: { gap: Spacing.three },
-  // maxWidth keeps a lone tile in the last row from stretching across both columns.
-  tile: { flex: 1, maxWidth: '48.5%', gap: Spacing.one },
-  thumb: { width: '100%', aspectRatio: 9 / 16, borderRadius: Spacing.two, overflow: 'hidden' },
-  check: {
-    position: 'absolute',
-    top: Spacing.two,
-    right: Spacing.two,
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  angles: {
-    position: 'absolute',
-    left: Spacing.two,
-    bottom: Spacing.two,
-    paddingHorizontal: Spacing.two,
-    paddingVertical: Spacing.half,
-    borderRadius: Spacing.two,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-  },
-  anglesText: { color: '#fff', fontSize: 12, lineHeight: 16, fontWeight: '700' },
-  checkEmpty: { borderColor: '#fff', backgroundColor: 'rgba(0,0,0,0.3)' },
-  checkMark: { color: '#fff', fontWeight: '700', lineHeight: 20 },
   deleteBar: {
     position: 'absolute',
     left: 0,

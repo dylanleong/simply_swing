@@ -13,7 +13,10 @@ object WearProtocol {
   /** phone → watch → phone: clock round-trip probe; payload echoed unchanged. */
   const val PATH_PING = "/simpleswing/ping"
   const val PATH_PONG = "/simpleswing/pong"
-  /** watch → phone: "ageMs,peakDps" — a swing whose peak was ageMs before sending. */
+  /**
+   * watch → phone: "ageMs,peakDps[,backswingMs,downswingMs]" — a swing whose peak was ageMs before
+   * sending, with its tempo when the watch could measure it.
+   */
   const val PATH_SWING = "/simpleswing/swing"
   /** watch → phone, every few seconds while sensing: "1". */
   const val PATH_HEARTBEAT = "/simpleswing/heartbeat"

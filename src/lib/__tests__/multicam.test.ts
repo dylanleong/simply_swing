@@ -2,9 +2,11 @@ import {
   angleLabels,
   angleShiftSec,
   angleTimeSec,
+  compareLink,
   driftCorrectionSec,
   exportSource,
   formatSync,
+  linkedTimeSec,
   nudgeStepMs,
   otherView,
 } from '../multicam';
@@ -91,5 +93,28 @@ describe('exportSource', () => {
 
   it('exports the main clip when there is no second angle', () => {
     expect(exportSource(main, null, 'both')).toEqual({ uri: main.uri, angle: null });
+  });
+});
+
+describe('compareLink', () => {
+  const a = { impactOffsetMs: 3000, anchorOffsetMs: 3000 };
+
+  it('lines two swings up on their impacts', () => {
+    const b = { impactOffsetMs: 3400, anchorOffsetMs: 3400, durationMs: 4500, fps: 240 };
+    const link = compareLink(a, b);
+    expect(link.shiftSec).toBeCloseTo(0.4);
+    expect(linkedTimeSec(3.0, link)).toBeCloseTo(3.4);
+    expect(link).toMatchObject({ durationSec: 4.5, fps: 240 });
+  });
+
+  it('falls back to the trigger for button saves, and applies the nudge', () => {
+    const b = { impactOffsetMs: null, anchorOffsetMs: 6000, durationMs: 6300, fps: 120 };
+    expect(compareLink(a, b, -100).shiftSec).toBeCloseTo(2.9);
+  });
+
+  it('clamps to the second clip', () => {
+    const link = { shiftSec: -1, durationSec: 4, fps: 120 };
+    expect(linkedTimeSec(0.5, link)).toBe(0);
+    expect(linkedTimeSec(6, link)).toBe(4);
   });
 });

@@ -12,9 +12,11 @@ class SwingDetectorTest {
   private val degToRad = (PI / 180).toFloat()
 
   /** Runs a speed profile (deg/s per sample) through the detector; returns peak times in seconds. */
-  private fun detect(speeds: List<Double>): List<Pair<Double, Double>> {
-    val hits = mutableListOf<Pair<Double, Double>>()
-    val detector = SwingDetector { t, dps -> hits.add(t / 1e9 to dps) }
+  private fun detect(speeds: List<Double>): List<Pair<Double, Double>> = detectSwings(speeds).map { it.peakTimeNs / 1e9 to it.peakDps }
+
+  private fun detectSwings(speeds: List<Double>): List<SwingDetector.Swing> {
+    val hits = mutableListOf<SwingDetector.Swing>()
+    val detector = SwingDetector { hits.add(it) }
     speeds.forEachIndexed { i, dps ->
       // Split across axes; the detector only uses the magnitude.
       val v = (dps / sqrt3).toFloat() * degToRad
@@ -67,5 +69,22 @@ class SwingDetectorTest {
   fun countsEachOfTwoSwingsOnce() {
     val profile = still(1.0) + swing() + still(2.0) + swing(peak = 1400.0) + still(1.0)
     assertEquals(2, detect(profile).size)
+  }
+
+  @Test
+  fun measuresTempo() {
+    val swing = detectSwings(still(1.0) + swing() + still(1.0)).single()
+    // Takeaway at 1.0 s (last still sample 0.99 s), top in the transition dip at 1.80 s, peak 2.14 s.
+    assertEquals(0.81, swing.backswingNs!! / 1e9, 0.03)
+    assertEquals(0.34, swing.downswingNs!! / 1e9, 0.03)
+  }
+
+  @Test
+  fun leavesBackswingUnknownWithoutAStillAddress() {
+    // Swinging straight out of a waggle: no still moment in the history before the top.
+    val waggle = List(150) { i -> 150 + 60 * sin(2 * PI * i / 50) }
+    val swing = detectSwings(waggle + swing() + still(1.0)).single()
+    assertEquals(null, swing.backswingNs)
+    assertEquals(0.34, swing.downswingNs!! / 1e9, 0.03)
   }
 }

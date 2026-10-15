@@ -37,12 +37,19 @@ class SwingSensorService : Service(), SensorEventListener, MessageClient.OnMessa
   private var wakeLock: PowerManager.WakeLock? = null
   private var phoneIdleSinceMs = 0L
 
-  private val detector = SwingDetector { peakTimeNs, peakDps ->
-    val ageMs = (SystemClock.elapsedRealtimeNanos() - peakTimeNs) / 1_000_000
-    Log.i(TAG, "Swing peak %.0f°/s, %d ms ago".format(peakDps, ageMs))
-    lastSwingDps = peakDps
+  private val detector = SwingDetector { swing ->
+    val ageMs = (SystemClock.elapsedRealtimeNanos() - swing.peakTimeNs) / 1_000_000
+    val backswingMs = swing.backswingNs?.div(1_000_000)
+    val downswingMs = swing.downswingNs?.div(1_000_000)
+    Log.i(
+      TAG,
+      "Swing peak %.0f°/s, %d ms ago, backswing %s ms, downswing %s ms".format(swing.peakDps, ageMs, backswingMs, downswingMs),
+    )
+    lastSwingDps = swing.peakDps
     listener?.invoke()
-    sendToPhone(WearProtocol.PATH_SWING, "$ageMs,${peakDps.toInt()}")
+    // Tempo fields are only sent when both are known; older phones ignore extra fields.
+    val tempo = if (backswingMs != null && downswingMs != null) ",$backswingMs,$downswingMs" else ""
+    sendToPhone(WearProtocol.PATH_SWING, "$ageMs,${swing.peakDps.toInt()}$tempo")
   }
 
   private val heartbeat = object : Runnable {

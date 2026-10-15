@@ -25,6 +25,7 @@ describe('parseSettings', () => {
       secondCamera: true,
       lastCameraName: 'Pixel 8',
       cameraView: 'dtl',
+      club: '7i',
     };
     expect(parseSettings(JSON.stringify(stored))).toEqual(stored);
   });

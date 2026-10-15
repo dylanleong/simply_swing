@@ -10,7 +10,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CaptureHelp } from '@/components/capture-help';
 import { GolferBox, type PreviewFrame } from '@/components/golfer-box';
+import { LevelIndicator } from '@/components/level-indicator';
 import { SecondCameraSheet } from '@/components/second-camera-sheet';
+import { ClubPicker, ResultChips } from '@/components/shot-tags';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { PAIRING_ERROR_CODES, useMainPeerLink } from '@/hooks/use-main-peer-link';
@@ -28,7 +30,9 @@ import { CLIP_BUFFER_OPTIONS } from '@/lib/clip-playback';
 import { idlePhase, shouldDim, type IdlePhase } from '@/lib/idle';
 import { formatSync } from '@/lib/multicam';
 import { dimScreen, restoreScreen } from '@/lib/screen-dimmer';
-import { listSwings, pruneOldSwings } from '@/lib/swing-store';
+import type { ShotResult } from '@/lib/swing-notes';
+import { formatTempoRatio, parseTempo, type Tempo } from '@/lib/swing-library';
+import { listSwings, pruneOldSwings, updateSwingNotes } from '@/lib/swing-store';
 import SwingCapture, {
   SwingCaptureView,
   useCapturePermissions,
@@ -149,6 +153,7 @@ function Recorder() {
   const [exposure, setExposure] = useState<ExposureEvent | null>(null);
   const [watch, setWatch] = useState<WatchStatusEvent>({ connected: false, sensing: false });
   const [lastWristDps, setLastWristDps] = useState<number | null>(null);
+  const [lastWristTempo, setLastWristTempo] = useState<Tempo | null>(null);
   const [viewLayout, setViewLayout] = useState<LayoutRectangle | null>(null);
   // Screen y where the top controls end and the bottom bar starts; the golfer box stays between.
   const [topControlsBottom, setTopControlsBottom] = useState(0);
@@ -156,6 +161,7 @@ function Recorder() {
   const [showLevels, setShowLevels] = useState(false);
   const [showHelp, setShowHelp] = useState(!settings.seenHelp);
   const [showCameraSheet, setShowCameraSheet] = useState(false);
+  const [showClubPicker, setShowClubPicker] = useState(false);
   const link = useMainPeerLink();
   const { resume: resumeLink } = link;
   /** The hint that has faded out; a different hint (new state) shows again. */
@@ -225,6 +231,8 @@ function Recorder() {
         setSessionCount((n) => n + 1);
         setLastSwing({ id: swingIdFromUri(c.uri), thumbUri: c.thumbUri });
         setError(null);
+        const club = settingsRef.current.club;
+        if (club) updateSwingNotes(c.id, { club });
         setClip(c);
       }),
       SwingCapture.addListener('onSound', setLastSound),
@@ -245,6 +253,7 @@ function Recorder() {
       SwingCapture.addListener('onWatchStatus', setWatch),
       SwingCapture.addListener('onWristSwing', (e) => {
         setLastWristDps(e.peakDps);
+        setLastWristTempo(parseTempo(e.backswingMs, e.downswingMs));
         markActive();
       }),
       SwingCapture.addListener('onThermalDowngrade', (e) =>
@@ -346,6 +355,14 @@ function Recorder() {
     updateSettings({ roi: clamped });
   };
 
+  const replayTempo = clip ? parseTempo(clip.backswingMs, clip.downswingMs) : null;
+
+  /** Tags the replayed swing with what the ball did, then goes back to the camera. */
+  const tagReplay = (result: ShotResult | null) => {
+    if (clip && result) updateSwingNotes(clip.id, { result });
+    setClip(null);
+  };
+
   const closeHelp = () => {
     setShowHelp(false);
     if (!settingsRef.current.seenHelp) updateSettings({ seenHelp: true });
@@ -406,6 +423,15 @@ function Recorder() {
             style={StyleSheet.absoluteFill}
             onPress={() => setClip(null)}
           />
+          {viewLayout && bottomBarTop != null && (
+            <View style={[styles.tagPanel, { bottom: viewLayout.height - bottomBarTop + BOX_GAP }]}>
+              {replayTempo && <ThemedText style={styles.tagTitle}>{`Tempo ${formatTempoRatio(replayTempo)}`}</ThemedText>}
+              <ThemedText style={styles.tagTitle}>
+                {settings.club ? `How was that ${settings.club}?` : 'How was it?'}
+              </ThemedText>
+              <ResultChips value={null} onChange={tagReplay} onDark />
+            </View>
+          )}
         </View>
       )}
 
@@ -425,6 +451,14 @@ function Recorder() {
             {watch.sensing && !clip && <ThemedText style={styles.watchBadge}>⌚</ThemedText>}
           </Pressable>
           <View style={styles.flex} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={settings.club ? `Club: ${settings.club}. Change club` : 'Choose club'}
+            onPress={() => setShowClubPicker(true)}
+            hitSlop={8}
+            style={[styles.camButton, settings.club != null && { borderColor: 'rgba(255,255,255,0.6)' }]}>
+            <ThemedText style={styles.camText}>{settings.club ?? 'Club'}</ThemedText>
+          </Pressable>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={link.connected ? `Second camera connected` : 'Second camera'}
@@ -454,6 +488,7 @@ function Recorder() {
             </ThemedText>
           </Animated.View>
         )}
+        <LevelIndicator active={!clip && state !== 'standby'} />
         {error && (
           <ThemedText type="small" style={[styles.instruction, styles.error]} pointerEvents="none">
             {error}
@@ -470,7 +505,9 @@ function Recorder() {
               {!watch.connected
                 ? 'Watch: not connected'
                 : watch.sensing
-                  ? `Watch: sensing swings${lastWristDps ? ` · last ${lastWristDps}°/s` : ''}`
+                  ? `Watch: sensing swings${lastWristDps ? ` · last ${lastWristDps}°/s` : ''}${
+                      lastWristTempo ? ` · tempo ${formatTempoRatio(lastWristTempo)}` : ''
+                    }`
                   : 'Watch: connected (tap to save)'}
             </ThemedText>
             {link.enabled && (
@@ -553,6 +590,12 @@ function Recorder() {
       </View>
 
       <CaptureHelp visible={showHelp} onClose={closeHelp} lookbackSec={settings.lookbackSec} />
+      <ClubPicker
+        visible={showClubPicker}
+        value={settings.club}
+        onChange={(club) => updateSettings({ club })}
+        onClose={() => setShowClubPicker(false)}
+      />
       <SecondCameraSheet
         visible={showCameraSheet}
         status={link.status}
@@ -645,6 +688,17 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   error: { color: '#FF8A80' },
+  tagPanel: {
+    position: 'absolute',
+    left: Spacing.three,
+    right: Spacing.three,
+    alignItems: 'center',
+    gap: Spacing.two,
+    padding: Spacing.three,
+    borderRadius: Spacing.four,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  tagTitle: { color: '#fff', fontWeight: '700' },
   standby: {
     position: 'absolute',
     left: Spacing.five,

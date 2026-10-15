@@ -15,6 +15,11 @@ _Last updated 2026-10-15. The plan is in [`PLAN.md`](PLAN.md); this file records
 | Second phone as a second camera (multicam) | ✅ First two-phone run worked (HONOR main + OnePlus 9 camera, in sync ±11 ms) | 🟡 Ported, never compiled |
 | Watch: tap-to-save remote | 🟡 Wear OS app built (`wear/`), never run on a watch | ⬜ Apple Watch: Phase 6 |
 | Watch: wrist swing detection + sound fusion | 🟡 Built and unit-tested, **never run on a watch** (OnePlus Watch 2R to come) | ⬜ Phase 6 (needs HealthKit, paid account) |
+| Shot tags, club, favourites, filters, practice sessions | ✅ Verified on the HONOR | Shared JS |
+| Review tools: plane / line / circle / angle, grid, mirror; compare two swings | ✅ Verified on the HONOR | Shared JS (mirror relies on the video view's transform) |
+| Camera level check (accelerometer) | 🟡 Built; only checked lying flat (stays quiet). Check the tilt direction by hand | 🟡 Untested: the accelerometer's sign may differ |
+| Tempo (backswing : downswing from the wrist) | 🟡 Watch + phone built and unit-tested, **never run on a watch** | ⬜ Phase 6 |
+| Help & tips screen | ✅ Verified | Shared JS |
 | Purchases / paywall | ⬜ | ⬜ |
 | Store accounts & listing | ⬜ (upload key created) | ⬜ |
 
@@ -30,6 +35,26 @@ _Last updated 2026-10-15. The plan is in [`PLAN.md`](PLAN.md); this file records
 - **Clip files:** `Documents/swings/swing_<epochMs>.mp4`, plus `.jpg` (thumbnail) and `.json` (metadata sidecar). The JS library reads these directly (`src/lib/swing-store.ts`).
 - **Idle handling:** the screen dims after 30 s. After 5 min the camera goes to standby (30 fps preview plus the motion check only). Moving in the box, touching the screen, SAVE, the remote or the watch wakes it.
 - **Slow-motion export (Save to Photos / Share):** a ×4 retimed copy, so 120 fps plays back at 30 fps in any player.
+
+## Golfer features (added 2026-10-15)
+
+- **Tags:** `src/lib/swing-notes.ts`. The golfer's notes live in `swing_<id>.user.json` (result, club, favourite, drawings), never in the engine's `.json`. `updateSwingNotes` merges.
+  - Capture: the **Club** chip sets `CaptureSettings.club`, stamped on every clip in `onClipReady`. The replay overlay asks "How was it?" (`ResultChips`), and one tap tags it and closes the replay.
+  - Swings: `SwingBrowser` (shared with the compare picker) groups by session (`groupSessions`, a 45 min gap) and filters by club, result and favourites. Auto-delete never removes favourites.
+- **Review** (`src/app/swing/[id].tsx`) has four panels: Play, Tag, Draw, Share. Players come from `useLinkedPlayers` (shared with compare).
+  - Drawings: `DrawingOverlay` draws with plain views (no SVG dependency), in picture coordinates (0..1 of the 9:16 clip, `fitRect`), so they survive layout changes.
+  - Video views use `surfaceType="textureView"`, because a SurfaceView ignores the mirror transform.
+  - Touch start is kept in a ref, not state: a quick tap's release arrives before a re-render.
+- **Compare:** Share → Compare with… → `/compare-pick` → `/compare?a&b`. The two swings line up on impact (`compareLink`), or on the trigger for button saves, with a nudge. Save/Share reuse `exportSideBySideAsync`. Its cache name includes both clip stems, so a comparison can't collide with an angle export.
+- **Level:** `src/lib/level.ts` + `LevelIndicator` on Capture. It warns past 2° of roll or 8° of pitch, and is quiet when the phone lies flat or is carried.
+- **Tempo:** the watch's `SwingDetector` keeps 4 s of speeds.
+  - **Top of the backswing:** the slowest sample 0.1–0.6 s before the peak.
+  - **Takeaway:** the last sample under 40°/s before the top.
+  - **Message:** the watch sends `"ageMs,peakDps,backswingMs,downswingMs"`. Older phones ignore the extra fields.
+  - **On the phone:** `WristSwingMessage`/`TempoLog` attach the tempo to the clip whose anchor is within 0.5 s of the wrist peak, written as `backswingMs`/`downswingMs` in the sidecar.
+  - **Shown:** on the replay, in review (Play panel), on library tiles and in Levels.
+  - **To tune on the watch:** the top search window and `stillDps`. Compare against a slow-motion clip's frame count for takeaway, top and impact.
+- **Help:** `src/lib/help-topics.ts` (content) + `src/app/help.tsx`. Opened from Settings, the Capture card and the Draw panel's "?" (`?topic=reading`).
 
 ## Watch: how wrist detection works (Wear OS)
 
@@ -158,10 +183,11 @@ Test phone: HONOR VKP-NX9, Android 16 (MagicOS), Qualcomm. It records 1080p at 1
 5. **The phone's microphone hears screen taps** at −30 to −50 dB. That is why the detector has an absolute loudness floor (−32 dB at medium; −24 low, −40 high) and mutes for 1.5 s after a touch. Touch-mute is Android-only so far.
 6. **The `logcat` buffer is tiny** (256 KB) and HONOR's camera service floods it. Run `adb logcat -G 16M` and filter by tag (`-s SwingCaptureEngine:I`).
 7. **Release Gradle builds run out of memory at 2 GB** (lint). Pass `-Dorg.gradle.jvmargs=-Xmx6g`.
-8. **expo-video's Android default buffer is ~130 MB per player**, refilled on every loop, all on the Java heap (limit 384 MB on the HONOR). Two review players, or the capture replay plus the camera's ring, crashed the app with an OOM. Every player now uses `CLIP_BUFFER_OPTIONS` (`src/lib/clip-playback.ts`, 24 MB cap); live heap is ~55–65 MB in every screen. Any new `useVideoPlayer` must use it too.
-9. **expo-video's native view swallows touches on Android.** A `Pressable` wrapped *around* a `VideoView` never fires; put the `Pressable` on top as a sibling.
-10. **VMware USB passthrough drops phones** whenever they re-enumerate (accepting the debugging prompt, unlocking, switching USB mode). Reattach via VM → Removable Devices. The VM sits on VMware NAT (192.168.136.x), so the phones can't reach it over Wi-Fi; the `multicam-peer.py` tunnel only works while USB stays attached.
-11. **Android's Wear OS link isn't present on the test phone** (`Wearable.API is not available`). The watch model is still unconfirmed. If it's a HONOR watch, it can't run Wear OS apps.
+8. **Put overlays on the picture, not the pane.** With "contain", a video pane has letterbox bars, so labels and drawings are positioned from `fitRect`. Otherwise they float in the bars or drift off the golfer when the layout changes.
+9. **expo-video's Android default buffer is ~130 MB per player**, refilled on every loop, all on the Java heap (limit 384 MB on the HONOR). Two review players, or the capture replay plus the camera's ring, crashed the app with an OOM. Every player now uses `CLIP_BUFFER_OPTIONS` (`src/lib/clip-playback.ts`, 24 MB cap); live heap is ~55–65 MB in every screen. Any new `useVideoPlayer` must use it too.
+10. **expo-video's native view swallows touches on Android.** A `Pressable` wrapped *around* a `VideoView` never fires; put the `Pressable` on top as a sibling.
+11. **VMware USB passthrough drops phones** whenever they re-enumerate (accepting the debugging prompt, unlocking, switching USB mode). Reattach via VM → Removable Devices. The VM sits on VMware NAT (192.168.136.x), so the phones can't reach it over Wi-Fi; the `multicam-peer.py` tunnel only works while USB stays attached.
+12. **Android's Wear OS link isn't present on the test phone** (`Wearable.API is not available`). The watch model is still unconfirmed. If it's a HONOR watch, it can't run Wear OS apps.
 
 **Second test phone: OnePlus 9 (LE2113), Android 14.** 1080p @ 120 fps high-speed; its encoder stamps frames on the declared clock (offset 0). In dim indoor light, sensor noise alone reads ~52% "motion" in the golfer box, so the threshold climbs above 100% and auto-trigger can't fire. Check this in daylight before tuning; the motion gate may need noise-aware thresholds.
 
@@ -195,6 +221,7 @@ Expect compile errors. The Swift was written blind against the SDK 57 sources. P
 - [ ] **Volume buttons:** they save (iOS 17.2+ only) and don't change the volume.
 - [ ] **Sharp mode:** Levels shows a shutter of 1/1000 s or faster (iOS caps auto-exposure via `activeMaxExposureDuration`).
 - [ ] **Standby:** wakes correctly. **Interruptions:** a phone call or Control Centre camera recovers cleanly.
+- [ ] **Level bar:** tilt the phone clockwise. The bar should rotate to stay level with the real horizon. If it tilts the other way, flip the roll sign for iOS in `tiltFromGravity`.
 - [ ] **Exports:** Save to Photos and Share produce a slow-motion clip (the iOS export re-encodes, so expect a second or two).
 - [ ] **Multicam:**
   - The Local Network prompt appears, and the iPhone appears in the Android main phone's list (and the other way round).
@@ -222,5 +249,5 @@ Expect compile errors. The Swift was written blind against the SDK 57 sources. P
 4. **Tune thresholds** from the range data, on both platforms. The constants are `ImpactDetector.minLevelDb/marginDb` and `MotionGate.minMotion/thresholdFactor`.
 5. **Play policy tidy-up.** Try blocking `READ_MEDIA_VIDEO` and `READ_MEDIA_VISUAL_USER_SELECTED` while confirming Save to Photos still works. **Keep `INTERNET`:** the second-camera link needs it for local sockets. Nothing leaves the local network, so "Data Not Collected" still holds.
 6. **Purchases.** A £14.99 lifetime unlock via `expo-iap`. The free tier allows 3 auto-saves per session; `src/lib/trigger-quota.ts` is ready to wire to `SwingCapture.setAutoTrigger`.
-7. **Watch.** Pair the OnePlus Watch 2R through OHealth and install `wear/` over wireless ADB. Then tune `SwingDetector` on real swings, and check the clock alignment (log: `Wrist swing peak … one-way … ms`). Apple Watch (WCSession plus a HealthKit workout) on the Mac.
+7. **Watch.** Pair the OnePlus Watch 2R through OHealth and install `wear/` over wireless ADB. Then tune `SwingDetector` on real swings, including its tempo (top and takeaway against the slow-motion clip), and check the clock alignment (log: `Wrist swing peak … one-way … ms`). Apple Watch (WCSession plus a HealthKit workout) on the Mac.
 8. **Store listing,** privacy policy ("Data Not Collected"), screenshots, then closed and TestFlight betas.

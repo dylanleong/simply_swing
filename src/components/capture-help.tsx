@@ -1,3 +1,4 @@
+import { router } from 'expo-router';
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
@@ -8,8 +9,8 @@ const steps = (lookbackSec: number): { title: string; body: string }[] => [
   {
     title: 'Set up the phone',
     body:
-      'Tripod about 3 m away, camera at hand height. Down the line: aim along your target line. ' +
-      'Face on: square to your chest.',
+      'Tripod about 3 m away, camera at hand height, upright and level (a bar at the top warns if it’s ' +
+      'tilted). Down the line: behind you, aiming along your target line. Face on: square to your chest.',
   },
   {
     title: 'Fit the golfer box',
@@ -30,14 +31,10 @@ const steps = (lookbackSec: number): { title: string; body: string }[] => [
       `last ${lookbackSec} seconds.`,
   },
   {
-    title: 'Wearing a watch?',
+    title: 'Tag it and review it',
     body:
-      'Open SimpleSwing on it. It senses your swing on the wrist, so only your own shots save, and ' +
-      'it can save practice swings too (Settings → Watch).',
-  },
-  {
-    title: 'Review',
-    body: 'Tap the thumbnail, or open the Swings tab, to replay at ½, ¼ or ⅛ speed and step frame by frame.',
+      'Pick your club with the Club button; after each shot, tap what the ball did. Open a swing to ' +
+      'replay it slowly, draw on it, and compare it with your best.',
   },
 ];
 
@@ -75,6 +72,15 @@ export function CaptureHelp({
           </ScrollView>
           <Pressable
             accessibilityRole="button"
+            onPress={() => {
+              onClose();
+              router.push('/help');
+            }}
+            style={({ pressed }) => [styles.link, { opacity: pressed ? 0.6 : 1 }]}>
+            <ThemedText style={{ color: theme.accent, fontWeight: '600' }}>More help & golf tips</ThemedText>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
             onPress={onClose}
             style={({ pressed }) => [styles.button, { backgroundColor: theme.accent, opacity: pressed ? 0.7 : 1 }]}>
             <ThemedText style={styles.buttonText}>Got it</ThemedText>
@@ -93,6 +99,7 @@ const styles = StyleSheet.create({
     padding: Spacing.four,
   },
   card: { borderRadius: Spacing.four, maxHeight: '85%', overflow: 'hidden' },
+  link: { alignItems: 'center', paddingVertical: Spacing.two },
   content: { padding: Spacing.four, gap: Spacing.three },
   title: { fontSize: 26, lineHeight: 32 },
   step: { flexDirection: 'row', gap: Spacing.three },

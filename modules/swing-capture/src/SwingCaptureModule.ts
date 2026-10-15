@@ -39,7 +39,7 @@ declare class SwingCaptureModule extends NativeModule<SwingCaptureModuleEvents> 
   /**
    * A two-angle swing as one slow-motion video, the main clip on the left and the second angle on the
    * right, lined up so the angle's time is the main clip's plus [shiftMs]. Video only. Cached like
-   * `exportSlowMotionAsync`; a different shift (a nudge) makes a new file.
+   * `exportSlowMotionAsync`; another pairing or shift (a nudge) makes a new file. Also used to compare two swings.
    */
   exportSideBySideAsync(uri: string, angleUri: string, shiftMs: number, factor: number): Promise<string>;
   /** Main phone: look for camera phones (reported via `onPeersFound`) and reconnect to the last one. */

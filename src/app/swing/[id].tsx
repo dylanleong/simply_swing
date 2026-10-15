@@ -1,48 +1,46 @@
-import { useEvent } from 'expo';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { useVideoPlayer, VideoView, type VideoPlayer } from 'expo-video';
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, StyleSheet, View } from 'react-native';
+import { Alert, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { Chip } from '@/components/chip';
+import type { DrawTool } from '@/components/drawing-overlay';
+import { Segmented } from '@/components/segmented';
+import { ClubPicker, ResultChips } from '@/components/shot-tags';
 import { ThemedText } from '@/components/themed-text';
+import { VideoPane } from '@/components/video-pane';
 import { Spacing } from '@/constants/theme';
+import { SPEEDS, useLinkedPlayers } from '@/hooks/use-linked-players';
 import { useTheme } from '@/hooks/use-theme';
-import { CLIP_BUFFER_OPTIONS } from '@/lib/clip-playback';
 import {
   angleLabels,
-  angleTimeSec,
-  driftCorrectionSec,
+  angleLink,
   exportSource,
   formatSync,
   nudgeStepMs,
   type ReviewLayout,
 } from '@/lib/multicam';
 import { saveSwingToPhotos, shareSwing } from '@/lib/swing-export';
-import { formatClipTime, SOURCE_LABEL, type Angle, type Swing } from '@/lib/swing-library';
-import { deleteSwing, getSwing, setAngleNudge } from '@/lib/swing-store';
+import { formatClipTime, formatTempo, SOURCE_LABEL, type Angle, type Swing } from '@/lib/swing-library';
+import type { Drawings, Shape, SwingNotes } from '@/lib/swing-notes';
+import { deleteSwing, getSwing, setAngleNudge, updateSwingNotes } from '@/lib/swing-store';
 import SwingCapture from '../../../modules/swing-capture';
 
-const SPEEDS = [
-  { rate: 1, label: '1×' },
-  { rate: 0.5, label: '½' },
-  { rate: 0.25, label: '¼' },
-  { rate: 0.125, label: '⅛' },
+type Panel = 'play' | 'tag' | 'draw' | 'share';
+
+const PANELS = [
+  { value: 'play', label: 'Play' },
+  { value: 'tag', label: 'Tag' },
+  { value: 'draw', label: 'Draw' },
+  { value: 'share', label: 'Share' },
 ] as const;
 
-const DEFAULT_RATE = 0.25;
-/** How often the second angle is checked against the first while playing. */
-const SYNC_TICK_MS = 200;
-
-/** The players are mutable native objects; React Compiler only objects to mutating them inline. */
-function setPlaybackRate(player: VideoPlayer, rate: number) {
-  player.playbackRate = rate;
-}
-
-/** Exact seek (expo-video's `currentTime` is frame accurate; `seekBy` may snap to keyframes). */
-function seekTo(player: VideoPlayer, seconds: number) {
-  player.currentTime = Math.max(0, seconds);
-}
+const TOOLS: { value: DrawTool; label: string; hint: string }[] = [
+  { value: 'plane', label: 'Plane', hint: 'Drag along the shaft at address: the line runs across the picture.' },
+  { value: 'line', label: 'Line', hint: 'Drag to draw a line (spine, knee flex, alignment).' },
+  { value: 'circle', label: 'Circle', hint: 'Drag from the centre of the head outwards.' },
+  { value: 'angle', label: 'Angle', hint: 'Drag the first arm from the corner, then tap the end of the second.' },
+];
 
 export default function SwingReviewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -69,67 +67,65 @@ export default function SwingReviewScreen() {
 
 function Review({ swing }: { swing: Swing }) {
   const theme = useTheme();
-  const [rate, setRate] = useState<number>(DEFAULT_RATE);
+  const [panel, setPanel] = useState<Panel>('play');
   const [busy, setBusy] = useState<'save' | 'share' | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [layout, setLayout] = useState<ReviewLayout>('both');
   const [nudgeMs, setNudgeMs] = useState(swing.angle?.nudgeMs ?? 0);
+  const [notes, setNotes] = useState<SwingNotes>(swing.notes);
+  const [showClubPicker, setShowClubPicker] = useState(false);
+  const [tool, setTool] = useState<DrawTool | null>(null);
+  /** Which clip each drawing went on, newest last, for undo. */
+  const [history, setHistory] = useState<(keyof Drawings)[]>([]);
+  const [grid, setGrid] = useState(false);
+  const [mirrored, setMirrored] = useState(false);
+
   const angle: Angle | null = useMemo(() => (swing.angle ? { ...swing.angle, nudgeMs } : null), [swing.angle, nudgeMs]);
+  const link = useMemo(() => (angle ? angleLink(swing, angle) : null), [angle, swing]);
+  const { player, playerB, isPlaying, rate, pause, showAt, togglePlay, step, changeRate } = useLinkedPlayers(
+    swing.uri,
+    swing.angle?.uri ?? null,
+    link
+  );
 
-  const setup = (p: VideoPlayer) => {
-    p.bufferOptions = CLIP_BUFFER_OPTIONS;
-    p.loop = true;
-    p.muted = true;
-    p.playbackRate = DEFAULT_RATE;
-    p.play();
-  };
-  const player = useVideoPlayer(swing.uri, setup);
-  const playerB = useVideoPlayer(swing.angle?.uri ?? null, setup);
-  const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
-
-  // Two native players drift apart while playing (and loop at slightly different moments); keep the
-  // second angle within a frame of where the first says it should be.
-  useEffect(() => {
-    if (!angle || !isPlaying) return;
-    const timer = setInterval(() => {
-      const fix = driftCorrectionSec(player.currentTime, playerB.currentTime, swing, angle);
-      if (fix !== 0) seekTo(playerB, playerB.currentTime + fix);
-      if (!playerB.playing) playerB.play();
-    }, SYNC_TICK_MS);
-    return () => clearInterval(timer);
-  }, [angle, isPlaying, player, playerB, swing]);
-
-  const frameSec = 1 / (swing.fps ?? 120);
   const [labelA, labelB] = angle ? angleLabels(angle) : ['', ''];
   const showA = !angle || layout !== 'b';
   const showB = !!angle && layout !== 'a';
+  const drawing = panel === 'draw' ? tool : null;
 
-  /** Pauses both and shows the first angle at [t] (and the second at the matching moment). */
-  const showAt = (t: number) => {
-    player.pause();
-    playerB.pause();
-    seekTo(player, t);
-    if (angle) seekTo(playerB, angleTimeSec(t, swing, angle));
+  const saveNotes = (patch: Partial<SwingNotes>) => setNotes(updateSwingNotes(swing.id, patch));
+
+  const addShape = (clip: keyof Drawings) => (shape: Shape) => {
+    saveNotes({ drawings: { ...notes.drawings, [clip]: [...notes.drawings[clip], shape] } });
+    setHistory((h) => [...h, clip]);
   };
 
-  const changeRate = (r: number) => {
-    setRate(r);
-    setPlaybackRate(player, r);
-    setPlaybackRate(playerB, r);
+  const undo = () => {
+    // Undo this visit's drawings first, then older ones from the clip on screen.
+    const clip = history[history.length - 1] ?? (showA && notes.drawings.a.length ? 'a' : 'b');
+    if (notes.drawings[clip].length === 0) return;
+    saveNotes({ drawings: { ...notes.drawings, [clip]: notes.drawings[clip].slice(0, -1) } });
+    setHistory((h) => h.slice(0, -1));
   };
 
-  const togglePlay = () => {
-    if (isPlaying) {
-      player.pause();
-      playerB.pause();
-      return;
-    }
-    if (angle) seekTo(playerB, angleTimeSec(player.currentTime, swing, angle));
-    player.play();
-    if (angle) playerB.play();
-  };
+  const clearDrawings = () =>
+    Alert.alert('Clear drawings?', 'Removes every line, circle and angle on this swing.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clear',
+        style: 'destructive',
+        onPress: () => {
+          saveNotes({ drawings: { a: [], b: [] } });
+          setHistory([]);
+        },
+      },
+    ]);
 
-  const step = (frames: number) => showAt(player.currentTime + frames * frameSec);
+  const pickTool = (t: DrawTool) => {
+    // Drawing is done on a still frame.
+    pause();
+    setTool((cur) => (cur === t ? null : t));
+  };
 
   const goToImpact = () => {
     if (swing.impactOffsetMs != null) showAt(swing.impactOffsetMs / 1000);
@@ -141,10 +137,8 @@ function Review({ swing }: { swing: Swing }) {
     const next = Math.round((nudgeMs + frames * nudgeStepMs(angle.fps)) * 100) / 100;
     setNudgeMs(next);
     setAngleNudge(swing.id, next);
-    const t = player.currentTime;
-    player.pause();
-    playerB.pause();
-    seekTo(playerB, angleTimeSec(t, swing, { ...angle, nudgeMs: next }));
+    // Stay on this frame of the main clip; re-seek the angle with the new alignment.
+    showAt(player.currentTime, angleLink(swing, { ...angle, nudgeMs: next }));
   };
 
   // Save / Share what's on screen: both angles side by side, or the one shown.
@@ -178,125 +172,190 @@ function Review({ swing }: { swing: Swing }) {
         text: 'Delete',
         style: 'destructive',
         onPress: () => {
-          player.pause();
-          playerB.pause();
+          pause();
           deleteSwing(swing.id);
           router.back();
         },
       },
     ]);
 
+  const compare = () => {
+    pause();
+    router.push({ pathname: '/compare-pick', params: { a: swing.id } });
+  };
+
   const title = [formatClipTime(swing.createdAt), swing.source && SOURCE_LABEL[swing.source]]
     .filter(Boolean)
     .join(' · ');
   const sync = formatSync(angle?.syncMs ?? null);
+  const toolHint = TOOLS.find((t) => t.value === tool)?.hint;
 
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ title }} />
       <View style={styles.videos}>
         {showA && (
-          <View style={styles.video}>
-            <VideoView player={player} style={StyleSheet.absoluteFill} contentFit="contain" nativeControls={false} />
-            {showB && <ThemedText style={styles.videoLabel}>{labelA}</ThemedText>}
-          </View>
+          <VideoPane
+            player={player}
+            label={showB ? labelA : undefined}
+            mirrored={mirrored}
+            grid={grid}
+            shapes={notes.drawings.a}
+            tool={drawing}
+            onAddShape={addShape('a')}
+          />
         )}
         {showB && (
-          <View style={styles.video}>
-            <VideoView player={playerB} style={StyleSheet.absoluteFill} contentFit="contain" nativeControls={false} />
-            {showA && <ThemedText style={styles.videoLabel}>{labelB}</ThemedText>}
-          </View>
+          <VideoPane
+            player={playerB}
+            label={showA ? labelB : undefined}
+            mirrored={mirrored}
+            grid={grid}
+            shapes={notes.drawings.b}
+            tool={drawing}
+            onAddShape={addShape('b')}
+          />
         )}
       </View>
       <SafeAreaView edges={['bottom']} style={[styles.controls, { backgroundColor: theme.background }]}>
-        {angle && (
-          <View style={styles.row}>
-            <Chip label="Both" selected={layout === 'both'} onPress={() => setLayout('both')} />
-            <Chip label={labelA} selected={layout === 'a'} onPress={() => setLayout('a')} />
-            <Chip label={labelB} selected={layout === 'b'} onPress={() => setLayout('b')} />
-          </View>
+        <Segmented
+          options={PANELS}
+          value={panel}
+          onChange={(p) => {
+            setPanel(p);
+            if (p !== 'draw') setTool(null);
+          }}
+          accessibilityLabel="Review tools"
+        />
+
+        {panel === 'play' && (
+          <>
+            {swing.tempo && (
+              <ThemedText type="smallBold" style={styles.centered}>
+                {formatTempo(swing.tempo)}
+              </ThemedText>
+            )}
+            {angle && (
+              <View style={styles.row}>
+                <Chip label="Both" selected={layout === 'both'} onPress={() => setLayout('both')} />
+                <Chip label={labelA} selected={layout === 'a'} onPress={() => setLayout('a')} />
+                <Chip label={labelB} selected={layout === 'b'} onPress={() => setLayout('b')} />
+              </View>
+            )}
+            <View style={styles.row}>
+              {SPEEDS.map((s) => (
+                <Chip key={s.label} label={s.label} selected={rate === s.rate} onPress={() => changeRate(s.rate)} />
+              ))}
+            </View>
+            <View style={styles.row}>
+              <Chip label="◀ frame" onPress={() => step(-1, swing.fps)} />
+              <Chip label={isPlaying ? 'Pause' : 'Play'} selected onPress={togglePlay} />
+              <Chip label="frame ▶" onPress={() => step(1, swing.fps)} />
+            </View>
+            {angle && layout === 'both' && (
+              <View style={styles.row}>
+                <Chip label={`◀ ${labelB}`} onPress={() => nudge(-1)} />
+                <ThemedText type="small" themeColor="textSecondary" style={styles.syncText}>
+                  {nudgeMs === 0
+                    ? `In sync${sync ? ` ${sync}` : ''}`
+                    : `Adjusted ${nudgeMs > 0 ? '+' : ''}${nudgeMs.toFixed(1)} ms`}
+                </ThemedText>
+                <Chip label={`${labelB} ▶`} onPress={() => nudge(1)} />
+              </View>
+            )}
+            {swing.impactOffsetMs != null && (
+              <View style={styles.row}>
+                <Chip label="Jump to impact" onPress={goToImpact} />
+              </View>
+            )}
+          </>
         )}
-        <View style={styles.row}>
-          {SPEEDS.map((s) => (
-            <Chip key={s.label} label={s.label} selected={rate === s.rate} onPress={() => changeRate(s.rate)} />
-          ))}
-        </View>
-        <View style={styles.row}>
-          <Chip label="◀ frame" onPress={() => step(-1)} />
-          <Chip label={isPlaying ? 'Pause' : 'Play'} selected onPress={togglePlay} />
-          <Chip label="frame ▶" onPress={() => step(1)} />
-        </View>
-        {angle && layout === 'both' && (
-          <View style={styles.row}>
-            <Chip label={`◀ ${labelB}`} onPress={() => nudge(-1)} />
-            <ThemedText type="small" themeColor="textSecondary" style={styles.syncText}>
-              {nudgeMs === 0 ? `In sync${sync ? ` ${sync}` : ''}` : `Adjusted ${nudgeMs > 0 ? '+' : ''}${nudgeMs.toFixed(1)} ms`}
+
+        {panel === 'tag' && (
+          <>
+            <View style={styles.row}>
+              <Chip
+                label={notes.favorite ? '★ Favourite' : '☆ Favourite'}
+                selected={notes.favorite}
+                onPress={() => saveNotes({ favorite: !notes.favorite })}
+              />
+              <Chip label={notes.club ? `Club: ${notes.club}` : 'Club…'} onPress={() => setShowClubPicker(true)} />
+            </View>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.centered}>
+              What did the ball do?
             </ThemedText>
-            <Chip label={`${labelB} ▶`} onPress={() => nudge(1)} />
-          </View>
+            <ResultChips value={notes.result} onChange={(result) => saveNotes({ result })} />
+            <ThemedText type="small" themeColor="textSecondary" style={styles.centered}>
+              Favourites are never auto-deleted, and are quick to compare against.
+            </ThemedText>
+          </>
         )}
-        <View style={styles.row}>
-          {swing.impactOffsetMs != null && <Chip label="Jump to impact" onPress={goToImpact} />}
-          <Chip label={busy === 'save' ? 'Saving…' : 'Save to Photos'} onPress={() => !busy && run('save')} />
-          <Chip label={busy === 'share' ? 'Preparing…' : 'Share'} onPress={() => !busy && run('share')} />
-          <Chip label="Delete" danger onPress={confirmDelete} />
-        </View>
-        {notice && (
-          <ThemedText type="small" themeColor="textSecondary" style={styles.notice}>
-            {notice}
-          </ThemedText>
+
+        {panel === 'draw' && (
+          <>
+            <View style={styles.row}>
+              {TOOLS.map((t) => (
+                <Chip key={t.value} label={t.label} selected={tool === t.value} onPress={() => pickTool(t.value)} />
+              ))}
+            </View>
+            <View style={styles.row}>
+              <Chip label="Undo" onPress={undo} />
+              <Chip label="Clear" danger onPress={clearDrawings} />
+              <Chip label="Grid" selected={grid} onPress={() => setGrid((g) => !g)} />
+              <Chip label="Mirror" selected={mirrored} onPress={() => setMirrored((m) => !m)} />
+              <Chip
+                label="?"
+                accessibilityLabel="What to look for"
+                onPress={() => {
+                  pause();
+                  router.push({ pathname: '/help', params: { topic: 'reading' } });
+                }}
+              />
+            </View>
+            <View style={styles.row}>
+              <Chip label="◀ frame" onPress={() => step(-1, swing.fps)} />
+              <Chip label={isPlaying ? 'Pause' : 'Play'} selected onPress={togglePlay} />
+              <Chip label="frame ▶" onPress={() => step(1, swing.fps)} />
+            </View>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.centered}>
+              {toolHint ?? 'Pick a tool, then draw on the video. Drawings stay on as it plays.'}
+            </ThemedText>
+          </>
+        )}
+
+        {panel === 'share' && (
+          <>
+            <View style={styles.row}>
+              <Chip label="Compare with…" onPress={compare} />
+              <Chip label={busy === 'save' ? 'Saving…' : 'Save to Photos'} onPress={() => !busy && run('save')} />
+              <Chip label={busy === 'share' ? 'Preparing…' : 'Share'} onPress={() => !busy && run('share')} />
+              <Chip label="Delete" danger onPress={confirmDelete} />
+            </View>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.centered}>
+              {notice ??
+                (angle && layout === 'both'
+                  ? 'Saves and shares both angles side by side.'
+                  : 'Saves and shares the clip on screen in slow motion.')}
+            </ThemedText>
+          </>
         )}
       </SafeAreaView>
+      <ClubPicker
+        visible={showClubPicker}
+        value={notes.club}
+        onChange={(club) => saveNotes({ club })}
+        onClose={() => setShowClubPicker(false)}
+      />
     </View>
-  );
-}
-
-function Chip({
-  label,
-  onPress,
-  selected = false,
-  danger = false,
-}: {
-  label: string;
-  onPress: () => void;
-  selected?: boolean;
-  danger?: boolean;
-}) {
-  const theme = useTheme();
-  const background = selected ? theme.accent : theme.backgroundElement;
-  const color = selected ? '#fff' : danger ? theme.danger : theme.text;
-  return (
-    <Pressable
-      accessibilityRole="button"
-      onPress={onPress}
-      style={({ pressed }) => [styles.chip, { backgroundColor: background, opacity: pressed ? 0.7 : 1 }]}>
-      <ThemedText style={{ color }}>{label}</ThemedText>
-    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
   videos: { flex: 1, flexDirection: 'row' },
-  video: { flex: 1 },
-  videoLabel: {
-    position: 'absolute',
-    top: Spacing.two,
-    left: Spacing.two,
-    color: '#fff',
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '700',
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    paddingHorizontal: Spacing.two,
-    paddingVertical: Spacing.half,
-    borderRadius: Spacing.two,
-    overflow: 'hidden',
-  },
   controls: { paddingHorizontal: Spacing.three, paddingTop: Spacing.three, gap: Spacing.two },
   row: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: Spacing.two, flexWrap: 'wrap' },
-  chip: { paddingHorizontal: Spacing.three, paddingVertical: Spacing.two, borderRadius: Spacing.four },
   syncText: { minWidth: 110, textAlign: 'center' },
-  notice: { textAlign: 'center' },
+  centered: { textAlign: 'center' },
   missing: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 });

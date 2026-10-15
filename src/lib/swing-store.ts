@@ -1,6 +1,7 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
 import { parseSwing, swingsToPrune, type AngleFile, type Swing } from './swing-library';
+import { parseNotes, type SwingNotes } from './swing-notes';
 
 /** The capture engine writes clips to <app files>/swings (Paths.document on both platforms). */
 function swingsDir() {
@@ -36,7 +37,8 @@ export function listSwings(): Swing[] {
     const sidecar = names.has(`${stem}.json`) ? new File(dir, `${stem}.json`) : null;
     const json = sidecar ? readText(sidecar) : null;
     const angleFile = names.has(`${stem}.b.mp4`) ? readAngle(dir, stem) : null;
-    const swing = parseSwing(f.name, dir.uri, json, names.has(`${stem}.jpg`), f.size, angleFile);
+    const notes = names.has(`${stem}.user.json`) ? readText(new File(dir, `${stem}.user.json`)) : null;
+    const swing = parseSwing(f.name, dir.uri, json, names.has(`${stem}.jpg`), f.size, angleFile, notes);
     if (swing) swings.push(swing);
   }
   return swings.sort((a, b) => b.createdAt - a.createdAt);
@@ -59,6 +61,14 @@ export function setAngleNudge(id: string, nudgeMs: number) {
   sidecar.write(JSON.stringify({ ...meta, nudgeMs }));
 }
 
+/** Merges [patch] into a swing's notes and returns the result. */
+export function updateSwingNotes(id: string, patch: Partial<SwingNotes>): SwingNotes {
+  const file = new File(swingsDir(), `${id}.user.json`);
+  const next = { ...parseNotes(file.exists ? readText(file) : null), ...patch };
+  file.write(JSON.stringify(next));
+  return next;
+}
+
 /** Removes the clip, its second angle and their thumbnails / sidecars. */
 export function deleteSwing(id: string) {
   deleteSwings([id]);
@@ -74,7 +84,7 @@ export function pruneOldSwings(days: number): number {
 export function deleteSwings(ids: readonly string[]) {
   const dir = swingsDir();
   for (const id of ids) {
-    for (const ext of ['mp4', 'jpg', 'json', 'b.mp4', 'b.json']) {
+    for (const ext of ['mp4', 'jpg', 'json', 'b.mp4', 'b.json', 'user.json']) {
       const f = new File(dir, `${id}.${ext}`);
       if (f.exists) f.delete();
     }

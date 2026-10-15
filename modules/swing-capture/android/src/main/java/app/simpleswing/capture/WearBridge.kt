@@ -29,8 +29,8 @@ class WearBridge(
   context: Context,
   private val currentState: () -> EngineState,
   private val onTrigger: () -> Boolean,
-  /** Wrist swing that peaked [ageMs] + one-way latency before now. */
-  private val onWristSwing: (ageMs: Long, oneWayMs: Long, peakDps: Int) -> Unit,
+  /** Wrist swing that peaked [ageMs] + one-way latency before now, with its tempo if measured. */
+  private val onWristSwing: (ageMs: Long, oneWayMs: Long, peakDps: Int, tempo: WristTempo?) -> Unit,
   private val onStatus: (connected: Boolean, sensing: Boolean) -> Unit,
 ) : MessageClient.OnMessageReceivedListener {
   private val messages = Wearable.getMessageClient(context)
@@ -99,10 +99,8 @@ class WearBridge(
       }
       PATH_SWING -> {
         lastHeartbeatMs = now
-        val parts = payload.split(",")
-        val ageMs = parts.getOrNull(0)?.toLongOrNull() ?: return
-        val peakDps = parts.getOrNull(1)?.toIntOrNull() ?: 0
-        if (mode == MODE_AUTO) onWristSwing(ageMs, oneWayMs, peakDps)
+        val swing = WristSwingMessage.parse(payload) ?: return
+        if (mode == MODE_AUTO) onWristSwing(swing.ageMs, oneWayMs, swing.peakDps, swing.tempo)
       }
     }
     handler.post(::reportStatus)

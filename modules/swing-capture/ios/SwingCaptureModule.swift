@@ -104,9 +104,10 @@ public class SwingCaptureModule: Module, CaptureEngineListener {
       }
       let dir = FileManager.default.temporaryDirectory.appendingPathComponent("exports", isDirectory: true)
       try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-      // The alignment is in the name: nudging the angle in review makes a fresh export.
+      // Both clips and the alignment are in the name: another pairing or a nudge makes a fresh export.
       let shiftUs = Int((shiftMs * 1000).rounded())
-      let name = "\(main.deletingPathExtension().lastPathComponent)_sbs_\(shiftUs)_x\(factor).mp4"
+      let stems = "\(main.deletingPathExtension().lastPathComponent)_\(angle.deletingPathExtension().lastPathComponent)"
+      let name = "\(stems)_sbs_\(shiftUs)_x\(factor).mp4"
       let output = dir.appendingPathComponent(name)
       if !Self.isUpToDate(output, comparedTo: main) || !Self.isUpToDate(output, comparedTo: angle) {
         try await ClipExporter.exportSideBySide(main: main, angle: angle, shiftSec: shiftMs / 1000, factor: factor, to: output)
