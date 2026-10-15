@@ -110,6 +110,76 @@ enum ClipExporter {
     try await run(session)
   }
 
+  /// A two-angle swing as one slow-motion video: [main] on the left, [angle] on the right, the angle
+  /// shown at `tA + shiftSec`. Video only, like `exportSlowMotion`. Before the angle starts (or
+  /// after it ends) its half is black.
+  static func exportSideBySide(main: URL, angle: URL, shiftSec: Double, factor: Int, to output: URL) async throws {
+    let mainAsset = AVURLAsset(url: main)
+    let angleAsset = AVURLAsset(url: angle)
+    guard let srcA = try await mainAsset.loadTracks(withMediaType: .video).first,
+          let srcB = try await angleAsset.loadTracks(withMediaType: .video).first
+    else { throw CaptureException("No video track to export") }
+    let durationA = try await mainAsset.load(.duration)
+    let durationB = try await angleAsset.load(.duration)
+
+    let composition = AVMutableComposition()
+    guard let trackA = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid),
+          let trackB = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+    else { throw CaptureException("Could not create video tracks") }
+    let full = CMTimeRange(start: .zero, duration: durationA)
+    try trackA.insertTimeRange(full, of: srcA, at: .zero)
+
+    // Composition time t shows the angle at t + shift: its [max(0, shift), …] goes in at max(0, -shift).
+    let shift = CMTime(seconds: shiftSec, preferredTimescale: 600)
+    let startB = CMTimeMaximum(shift, .zero)
+    let at = CMTimeMaximum(CMTimeSubtract(.zero, shift), .zero)
+    let lengthB = CMTimeMinimum(CMTimeSubtract(durationB, startB), CMTimeSubtract(durationA, at))
+    if lengthB > .zero {
+      try trackB.insertTimeRange(CMTimeRange(start: startB, duration: lengthB), of: srcB, at: at)
+    }
+    let slow = CMTimeMultiply(durationA, multiplier: Int32(factor))
+    composition.scaleTimeRange(full, toDuration: slow)
+
+    let panel = CGSize(width: 720, height: 1280)
+    let gap: CGFloat = 16
+    let layerA = AVMutableVideoCompositionLayerInstruction(assetTrack: trackA)
+    layerA.setTransform(try await fit(srcA, in: CGRect(origin: .zero, size: panel)), at: .zero)
+    let layerB = AVMutableVideoCompositionLayerInstruction(assetTrack: trackB)
+    layerB.setTransform(try await fit(srcB, in: CGRect(x: panel.width + gap, y: 0, width: panel.width, height: panel.height)), at: .zero)
+    let instruction = AVMutableVideoCompositionInstruction()
+    instruction.timeRange = CMTimeRange(start: .zero, duration: slow)
+    instruction.backgroundColor = CGColor(gray: 0, alpha: 1)
+    instruction.layerInstructions = [layerA, layerB]
+
+    let fps = try await srcA.load(.nominalFrameRate)
+    let videoComposition = AVMutableVideoComposition()
+    videoComposition.renderSize = CGSize(width: panel.width * 2 + gap, height: panel.height)
+    videoComposition.frameDuration = CMTime(value: 1, timescale: Int32(max(1, (Double(fps) / Double(factor)).rounded())))
+    videoComposition.instructions = [instruction]
+
+    try? FileManager.default.removeItem(at: output)
+    guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
+      throw CaptureException("Could not create export session")
+    }
+    session.videoComposition = videoComposition
+    session.outputURL = output
+    session.outputFileType = .mp4
+    try await run(session)
+  }
+
+  /// Shows [track] upright, scaled to fit inside [rect] and centred in it.
+  private static func fit(_ track: AVAssetTrack, in rect: CGRect) async throws -> CGAffineTransform {
+    let (size, transform) = try await track.load(.naturalSize, .preferredTransform)
+    let shown = CGRect(origin: .zero, size: size).applying(transform)
+    let scale = min(rect.width / shown.width, rect.height / shown.height)
+    let w = shown.width * scale
+    let h = shown.height * scale
+    return transform
+      .concatenating(CGAffineTransform(translationX: -shown.minX, y: -shown.minY))
+      .concatenating(CGAffineTransform(scaleX: scale, y: scale))
+      .concatenating(CGAffineTransform(translationX: rect.minX + (rect.width - w) / 2, y: rect.minY + (rect.height - h) / 2))
+  }
+
   private static func run(_ session: AVAssetExportSession) async throws {
     await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
       session.exportAsynchronously { continuation.resume() }

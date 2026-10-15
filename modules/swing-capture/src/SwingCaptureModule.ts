@@ -36,6 +36,12 @@ declare class SwingCaptureModule extends NativeModule<SwingCaptureModuleEvents> 
    * to the gallery or sharing. Returns its file URI (cached; regenerated if the clip changes).
    */
   exportSlowMotionAsync(uri: string, factor: number): Promise<string>;
+  /**
+   * A two-angle swing as one slow-motion video, the main clip on the left and the second angle on the
+   * right, lined up so the angle's time is the main clip's plus [shiftMs]. Video only. Cached like
+   * `exportSlowMotionAsync`; a different shift (a nudge) makes a new file.
+   */
+  exportSideBySideAsync(uri: string, angleUri: string, shiftMs: number, factor: number): Promise<string>;
   /** Main phone: look for camera phones (reported via `onPeersFound`) and reconnect to the last one. */
   startMainLink(): void;
   /** Main phone: connect to a found camera (`PeerInfo.id`) or a typed `host:port` / `host`. */

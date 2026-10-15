@@ -82,7 +82,8 @@ A second phone running SimpleSwing films another angle of the same swing (face o
   - `E_PEER_CLIP`: the transfer was cut short.
   - `E_PEER_VERSION`: the two phones run different app versions.
   - `E_PEER_PERMISSION` (iOS): the Local Network permission was refused.
-- **Not done yet:** a two-phone run at the range, the paywall gate (it's a paid add-on in the plan), and Save/Share of both angles side by side.
+- **Save / Share with "Both" on screen** export one side-by-side slow-motion video (`exportSideBySideAsync`): main clip left, angle right, 720×1280 panels with a 16 px gap (1456×1280), lined up with review's shift (nudge included, and part of the cache file name). Android: `SideBySideExporter` decodes both into SurfaceTextures and draws them with GL into the encoder; verified on the HONOR (upright, in step); a 4.5 s clip exports in ~2.3 s. Keep the decoders fed with every input buffer they will take and never block on the encoder mid-stream: one-at-a-time feeding with 10 ms waits made it ~25 s. iOS: `AVMutableVideoComposition`, written blind. With one angle on screen, only that angle is exported.
+- **Not done yet:** a two-phone run at the range, the paywall gate (it's a paid add-on in the plan), and angle labels burned into the side-by-side export.
 
 ### Testing with one phone (Android, over adb)
 

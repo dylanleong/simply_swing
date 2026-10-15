@@ -3,6 +3,7 @@ import {
   angleShiftSec,
   angleTimeSec,
   driftCorrectionSec,
+  exportSource,
   formatSync,
   nudgeStepMs,
   otherView,
@@ -70,5 +71,25 @@ describe('labels and readouts', () => {
     expect(formatSync(2.6)).toBe('±3 ms');
     expect(nudgeStepMs(240)).toBeCloseTo(4.1667);
     expect(nudgeStepMs(null)).toBeCloseTo(8.333);
+  });
+});
+
+describe('exportSource', () => {
+  const main = { uri: 'file:///swings/swing_1.mp4', anchorOffsetMs: 3000 };
+
+  it('exports both angles side by side, with the nudge in the shift', () => {
+    const source = exportSource(main, angle({ nudgeMs: 8 }), 'both');
+    expect(source.uri).toBe(main.uri);
+    expect(source.angle?.uri).toBe('file:///swings/swing_1.b.mp4');
+    expect(source.angle?.shiftMs).toBeCloseTo(108);
+  });
+
+  it('exports just the angle on screen', () => {
+    expect(exportSource(main, angle(), 'a')).toEqual({ uri: main.uri, angle: null });
+    expect(exportSource(main, angle(), 'b')).toEqual({ uri: 'file:///swings/swing_1.b.mp4', angle: null });
+  });
+
+  it('exports the main clip when there is no second angle', () => {
+    expect(exportSource(main, null, 'both')).toEqual({ uri: main.uri, angle: null });
   });
 });

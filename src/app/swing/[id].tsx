@@ -9,7 +9,15 @@ import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { CLIP_BUFFER_OPTIONS } from '@/lib/clip-playback';
-import { angleLabels, angleTimeSec, driftCorrectionSec, formatSync, nudgeStepMs } from '@/lib/multicam';
+import {
+  angleLabels,
+  angleTimeSec,
+  driftCorrectionSec,
+  exportSource,
+  formatSync,
+  nudgeStepMs,
+  type ReviewLayout,
+} from '@/lib/multicam';
 import { saveSwingToPhotos, shareSwing } from '@/lib/swing-export';
 import { formatClipTime, SOURCE_LABEL, type Angle, type Swing } from '@/lib/swing-library';
 import { deleteSwing, getSwing, setAngleNudge } from '@/lib/swing-store';
@@ -25,8 +33,6 @@ const SPEEDS = [
 const DEFAULT_RATE = 0.25;
 /** How often the second angle is checked against the first while playing. */
 const SYNC_TICK_MS = 200;
-
-type Layout = 'both' | 'a' | 'b';
 
 /** The players are mutable native objects; React Compiler only objects to mutating them inline. */
 function setPlaybackRate(player: VideoPlayer, rate: number) {
@@ -66,7 +72,7 @@ function Review({ swing }: { swing: Swing }) {
   const [rate, setRate] = useState<number>(DEFAULT_RATE);
   const [busy, setBusy] = useState<'save' | 'share' | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [layout, setLayout] = useState<Layout>('both');
+  const [layout, setLayout] = useState<ReviewLayout>('both');
   const [nudgeMs, setNudgeMs] = useState(swing.angle?.nudgeMs ?? 0);
   const angle: Angle | null = useMemo(() => (swing.angle ? { ...swing.angle, nudgeMs } : null), [swing.angle, nudgeMs]);
 
@@ -141,18 +147,22 @@ function Review({ swing }: { swing: Swing }) {
     seekTo(playerB, angleTimeSec(t, swing, { ...angle, nudgeMs: next }));
   };
 
-  // Save / Share the angle on screen (the first when both are).
-  const exportUri = layout === 'b' && angle ? angle.uri : swing.uri;
+  // Save / Share what's on screen: both angles side by side, or the one shown.
+  const source = exportSource(swing, angle, layout);
 
   const run = async (kind: 'save' | 'share') => {
     setBusy(kind);
     setNotice(null);
     try {
       if (kind === 'save') {
-        await saveSwingToPhotos(exportUri);
-        setNotice('Saved to your gallery in slow motion.');
+        await saveSwingToPhotos(source);
+        setNotice(
+          source.angle
+            ? 'Saved to your gallery in slow motion, both angles side by side.'
+            : 'Saved to your gallery in slow motion.'
+        );
       } else {
-        await shareSwing(exportUri);
+        await shareSwing(source);
       }
     } catch (e) {
       setNotice((e as Error).message);

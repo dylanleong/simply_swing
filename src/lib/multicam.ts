@@ -34,6 +34,23 @@ export function angleTimeSec(tA: number, swing: Pick<Swing, 'anchorOffsetMs'>, a
   return Math.min(Math.max(0, t), end);
 }
 
+/** Review shows both angles, or one of them full size. */
+export type ReviewLayout = 'both' | 'a' | 'b';
+
+/** What Save / Share exports: one clip, or both side by side with the angle `shiftMs` ahead of the main clip. */
+export type ExportSource = { uri: string; angle: { uri: string; shiftMs: number } | null };
+
+/** Both angles side by side when both are on screen, otherwise the one that is. */
+export function exportSource(
+  swing: Pick<Swing, 'uri' | 'anchorOffsetMs'>,
+  angle: Angle | null,
+  layout: ReviewLayout
+): ExportSource {
+  if (!angle || layout === 'a') return { uri: swing.uri, angle: null };
+  if (layout === 'b') return { uri: angle.uri, angle: null };
+  return { uri: swing.uri, angle: { uri: angle.uri, shiftMs: angleShiftSec(swing, angle) * 1000 } };
+}
+
 /** One frame of the second angle, the step for manual alignment. */
 export const nudgeStepMs = (fps: number | null) => 1000 / (fps ?? 120);
 

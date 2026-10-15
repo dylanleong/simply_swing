@@ -168,6 +168,20 @@ class SwingCaptureModule : Module() {
       "file://${dst.absolutePath}"
     }
 
+    AsyncFunction("exportSideBySideAsync") { uri: String, angleUri: String, shiftMs: Double, factor: Int ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      val main = File(Uri.parse(uri).path ?: throw IllegalArgumentException("Not a file URI: $uri"))
+      val angle = File(Uri.parse(angleUri).path ?: throw IllegalArgumentException("Not a file URI: $angleUri"))
+      val shiftUs = Math.round(shiftMs * 1000)
+      val dir = File(context.cacheDir, "exports").apply { mkdirs() }
+      // The alignment is in the name: nudging the angle in review makes a fresh export.
+      val dst = File(dir, "${main.nameWithoutExtension}_sbs_${shiftUs}_x$factor.mp4")
+      if (!dst.exists() || dst.lastModified() < maxOf(main.lastModified(), angle.lastModified())) {
+        SideBySideExporter.export(main, angle, shiftUs, factor, dst)
+      }
+      "file://${dst.absolutePath}"
+    }
+
     Function("startMainLink") {
       engine.peers.startMain()
       Unit

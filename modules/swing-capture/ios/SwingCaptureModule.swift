@@ -98,6 +98,22 @@ public class SwingCaptureModule: Module, CaptureEngineListener {
       return output.absoluteString
     }
 
+    AsyncFunction("exportSideBySideAsync") { (uri: String, angleUri: String, shiftMs: Double, factor: Int) async throws -> String in
+      guard let main = URL(string: uri), main.isFileURL, let angle = URL(string: angleUri), angle.isFileURL else {
+        throw CaptureException("Not a file URI: \(uri) / \(angleUri)")
+      }
+      let dir = FileManager.default.temporaryDirectory.appendingPathComponent("exports", isDirectory: true)
+      try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+      // The alignment is in the name: nudging the angle in review makes a fresh export.
+      let shiftUs = Int((shiftMs * 1000).rounded())
+      let name = "\(main.deletingPathExtension().lastPathComponent)_sbs_\(shiftUs)_x\(factor).mp4"
+      let output = dir.appendingPathComponent(name)
+      if !Self.isUpToDate(output, comparedTo: main) || !Self.isUpToDate(output, comparedTo: angle) {
+        try await ClipExporter.exportSideBySide(main: main, angle: angle, shiftSec: shiftMs / 1000, factor: factor, to: output)
+      }
+      return output.absoluteString
+    }
+
     Function("startMainLink") {
       self.engine.peers.startMain()
     }
