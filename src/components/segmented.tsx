@@ -23,7 +23,7 @@ export function Segmented<T extends string | number>({
     <View
       accessibilityRole="radiogroup"
       accessibilityLabel={accessibilityLabel}
-      style={[styles.row, { backgroundColor: theme.backgroundElement }]}>
+      style={[styles.row, { borderColor: theme.border }]}>
       {options.map((o) => {
         const selected = o.value === value;
         return (
@@ -33,8 +33,12 @@ export function Segmented<T extends string | number>({
             accessibilityState={{ selected, disabled: o.disabled }}
             disabled={o.disabled}
             onPress={() => onChange(o.value)}
-            style={[styles.segment, selected && { backgroundColor: theme.accent }, o.disabled && styles.disabled]}>
-            <ThemedText type="smallBold" style={selected ? styles.selectedText : undefined}>
+            style={[
+              styles.segment,
+              selected && { backgroundColor: theme.accentSoft, borderColor: theme.accent },
+              o.disabled && styles.disabled,
+            ]}>
+            <ThemedText type="smallBold" style={selected ? { color: theme.accent } : undefined}>
               {o.label}
             </ThemedText>
           </Pressable>
@@ -45,13 +49,15 @@ export function Segmented<T extends string | number>({
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: 'row', borderRadius: Spacing.three, padding: Spacing.half },
+  // Same language as option chips: outlined, the choice tinted with the accent.
+  row: { flexDirection: 'row', borderRadius: Spacing.three, borderWidth: 1, padding: Spacing.half },
   segment: {
     flex: 1,
     alignItems: 'center',
     paddingVertical: Spacing.two,
     borderRadius: Spacing.three - 2,
+    borderWidth: 1,
+    borderColor: 'transparent',
   },
-  selectedText: { color: '#fff' },
   disabled: { opacity: 0.35 },
 });

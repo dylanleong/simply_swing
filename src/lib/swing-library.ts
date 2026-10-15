@@ -208,6 +208,11 @@ export const SOURCE_LABEL: Record<TriggerSource, string> = {
   wrist: 'Practice',
 };
 
+/** "14:14": for places where the day is already shown (a session header). */
+export function formatTimeOfDay(epochMs: number): string {
+  return new Date(epochMs).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
 export function formatClipTime(epochMs: number, now = Date.now()): string {
   const d = new Date(epochMs);
   const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });

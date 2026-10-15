@@ -56,6 +56,21 @@ _Last updated 2026-10-15. The plan is in [`PLAN.md`](PLAN.md); this file records
   - **To tune on the watch:** the top search window and `stillDps`. Compare against a slow-motion clip's frame count for takeaway, top and impact.
 - **Help:** `src/lib/help-topics.ts` (content) + `src/app/help.tsx`. Opened from Settings, the Capture card and the Draw panel's "?" (`?topic=reading`).
 
+## Design rules (2026-10-16 redesign)
+
+- **One look per role** (`src/components/chip.tsx`):
+  - `option`: outlined; selected = accent outline, tint (`accentSoft`) and text.
+  - `action`: filled neutral.
+  - `primary`: filled accent, one per screen.
+  - `danger`: red text.
+  - Navigation (`ModeBar`, the tab bar) is icon + label with no pill. Never style tabs like options.
+  - Settings' `Segmented` follows the option look.
+- **Green means selected / on, or the one main action.** Never decoration. Red means recording.
+- **Hide what's rare.** Review shows the transport and tagging. Draw is a mode. Save, share, compare, grid, mirror, aligning the angles, help and delete live in the ⋯ sheet (`Sheet` / `SheetRow`). Tapping an angle's label shows it alone.
+- **Nothing moves when a mode changes.** Review's dock is scrubber + `Transport` + a fixed-height tray (`TRAY_HEIGHT`) + `ModeBar`. Compare uses the same `Transport`.
+- **Icons:** `@expo/vector-icons` (Ionicons and MaterialCommunityIcons) via `<Icon name="ion:…" | "mci:…">`.
+- **Library:** 3 columns, tags on the thumbnail, time only under it (the session header gives the day), filters in a sheet.
+
 ## Watch: how wrist detection works (Wear OS)
 
 - **Watch** (`wear/`):

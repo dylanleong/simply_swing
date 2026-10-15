@@ -32,8 +32,11 @@ function seekTo(player: VideoPlayer, seconds: number) {
  */
 export function useLinkedPlayers(uriA: string, uriB: string | null, link: Link | null) {
   const [rate, setRate] = useState<number>(DEFAULT_RATE);
+  /** Where the first clip is, seconds: from the player while playing, from our seeks while paused. */
+  const [position, setPosition] = useState(0);
   const setup = (p: VideoPlayer) => {
     p.bufferOptions = CLIP_BUFFER_OPTIONS;
+    p.timeUpdateEventInterval = 1 / 30;
     p.loop = true;
     p.muted = true;
     p.playbackRate = DEFAULT_RATE;
@@ -42,6 +45,11 @@ export function useLinkedPlayers(uriA: string, uriB: string | null, link: Link |
   const player = useVideoPlayer(uriA, setup);
   const playerB = useVideoPlayer(uriB, setup);
   const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
+
+  useEffect(() => {
+    const sub = player.addListener('timeUpdate', (e) => setPosition(e.currentTime));
+    return () => sub.remove();
+  }, [player]);
 
   // Two native players drift apart while playing (and loop at slightly different moments); keep the
   // second within a frame of where the first says it should be.
@@ -64,6 +72,7 @@ export function useLinkedPlayers(uriA: string, uriB: string | null, link: Link |
   const showAt = (t: number, withLink: Link | null = link) => {
     pause();
     seekTo(player, t);
+    setPosition(Math.max(0, t));
     if (withLink) seekTo(playerB, linkedTimeSec(t, withLink));
   };
 
@@ -85,5 +94,5 @@ export function useLinkedPlayers(uriA: string, uriB: string | null, link: Link |
     setPlaybackRate(playerB, r);
   };
 
-  return { player, playerB, isPlaying, rate, pause, showAt, togglePlay, step, changeRate };
+  return { player, playerB, isPlaying, rate, position, pause, showAt, togglePlay, step, changeRate };
 }

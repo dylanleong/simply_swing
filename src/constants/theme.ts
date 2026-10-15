@@ -8,6 +8,9 @@ export const Colors = {
     backgroundSelected: '#E0E1E6',
     textSecondary: '#60646C',
     accent: '#1F8A4C',
+    /** Selected options: a tint of the accent behind accent text. */
+    accentSoft: 'rgba(31,138,76,0.12)',
+    border: '#D5D7DD',
     danger: '#C62828',
   },
   dark: {
@@ -17,6 +20,8 @@ export const Colors = {
     backgroundSelected: '#2E3135',
     textSecondary: '#B0B4BA',
     accent: '#3DCB7A',
+    accentSoft: 'rgba(61,203,122,0.18)',
+    border: '#3A3D43',
     danger: '#FF6B6B',
   },
 } as const;

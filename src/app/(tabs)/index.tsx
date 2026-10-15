@@ -12,6 +12,8 @@ import { CaptureHelp } from '@/components/capture-help';
 import { GolferBox, type PreviewFrame } from '@/components/golfer-box';
 import { LevelIndicator } from '@/components/level-indicator';
 import { SecondCameraSheet } from '@/components/second-camera-sheet';
+import { Icon } from '@/components/icon';
+import { IconButton } from '@/components/icon-button';
 import { ClubPicker, ResultChips } from '@/components/shot-tags';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -425,11 +427,17 @@ function Recorder() {
           />
           {viewLayout && bottomBarTop != null && (
             <View style={[styles.tagPanel, { bottom: viewLayout.height - bottomBarTop + BOX_GAP }]}>
-              {replayTempo && <ThemedText style={styles.tagTitle}>{`Tempo ${formatTempoRatio(replayTempo)}`}</ThemedText>}
-              <ThemedText style={styles.tagTitle}>
-                {settings.club ? `How was that ${settings.club}?` : 'How was it?'}
-              </ThemedText>
-              <ResultChips value={null} onChange={tagReplay} onDark />
+              <View style={styles.tagHeader}>
+                <ThemedText style={styles.tagTitle}>
+                  {settings.club ? `How was that ${settings.club}?` : 'How was it?'}
+                </ThemedText>
+                {replayTempo && <ThemedText style={styles.tagTempo}>{`Tempo ${formatTempoRatio(replayTempo)}`}</ThemedText>}
+                <View style={styles.flex} />
+                <Pressable accessibilityRole="button" onPress={() => tagReplay(null)} hitSlop={10}>
+                  <ThemedText style={styles.skip}>Skip</ThemedText>
+                </Pressable>
+              </View>
+              <ResultChips value={null} onChange={tagReplay} onDark size="lg" />
             </View>
           )}
         </View>
@@ -451,35 +459,38 @@ function Recorder() {
             {watch.sensing && !clip && <ThemedText style={styles.watchBadge}>⌚</ThemedText>}
           </Pressable>
           <View style={styles.flex} />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={settings.club ? `Club: ${settings.club}. Change club` : 'Choose club'}
-            onPress={() => setShowClubPicker(true)}
-            hitSlop={8}
-            style={[styles.camButton, settings.club != null && { borderColor: 'rgba(255,255,255,0.6)' }]}>
-            <ThemedText style={styles.camText}>{settings.club ?? 'Club'}</ThemedText>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={link.connected ? `Second camera connected` : 'Second camera'}
-            onPress={() => {
-              if (!link.enabled) link.turnOn();
-              setShowCameraSheet(true);
-            }}
-            hitSlop={8}
-            style={[styles.camButton, link.connected && { borderColor: theme.accent }]}>
-            <ThemedText style={[styles.camText, link.connected && { color: theme.accent }]}>
-              {link.connected ? '2 cams' : link.enabled ? 'Cam…' : '+ Cam'}
-            </ThemedText>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="How it works"
-            onPress={() => setShowHelp(true)}
-            hitSlop={8}
-            style={styles.helpButton}>
-            <ThemedText style={styles.helpText}>?</ThemedText>
-          </Pressable>
+          <View style={styles.topButtons} pointerEvents="box-none">
+            {/* The club in hand: an icon until one is chosen, then its name. */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={settings.club ? `Club: ${settings.club}. Change club` : 'Choose club'}
+              onPress={() => setShowClubPicker(true)}
+              hitSlop={6}
+              style={styles.roundButton}>
+              {settings.club ? (
+                <ThemedText style={styles.clubText}>{settings.club}</ThemedText>
+              ) : (
+                <Icon name="mci:golf" size={22} color="#fff" />
+              )}
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={
+                link.connected ? 'Second camera connected' : link.enabled ? 'Second camera: searching' : 'Add a second camera'
+              }
+              onPress={() => {
+                if (!link.enabled) link.turnOn();
+                setShowCameraSheet(true);
+              }}
+              hitSlop={6}
+              style={styles.roundButton}>
+              <Icon name="ion:videocam-outline" size={22} color="#fff" />
+              {link.enabled && (
+                <View style={[styles.statusDot, { backgroundColor: link.connected ? theme.accent : '#FFB020' }]} />
+              )}
+            </Pressable>
+            <IconButton icon="ion:help" accessibilityLabel="How it works" onDark size={40} onPress={() => setShowHelp(true)} />
+          </View>
         </View>
         {hintVisible && (
           <Animated.View entering={FadeIn} exiting={FadeOut} pointerEvents="none">
@@ -657,27 +668,17 @@ const styles = StyleSheet.create({
   pillText: { color: '#fff', fontWeight: '600', fontSize: 15, lineHeight: 20 },
   watchBadge: { color: '#3DCB7A', fontSize: 14, lineHeight: 20 },
   flex: { flex: 1 },
-  camButton: {
-    height: 36,
-    paddingHorizontal: Spacing.three,
-    borderRadius: 18,
-    borderWidth: 1.5,
-    borderColor: 'transparent',
-    backgroundColor: SCRIM,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: Spacing.two,
-  },
-  camText: { color: '#fff', fontWeight: '700', fontSize: 14, lineHeight: 18 },
-  helpButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  topButtons: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  roundButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: SCRIM,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  helpText: { color: '#fff', fontWeight: '700', fontSize: 18, lineHeight: 22 },
+  clubText: { color: '#fff', fontWeight: '800', fontSize: 14, lineHeight: 18 },
+  statusDot: { position: 'absolute', top: 6, right: 6, width: 9, height: 9, borderRadius: 5, borderWidth: 1.5, borderColor: '#000' },
   instruction: {
     alignSelf: 'flex-start',
     color: '#fff',
@@ -692,13 +693,15 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: Spacing.three,
     right: Spacing.three,
-    alignItems: 'center',
-    gap: Spacing.two,
+    gap: Spacing.three,
     padding: Spacing.three,
     borderRadius: Spacing.four,
-    backgroundColor: 'rgba(0,0,0,0.45)',
+    backgroundColor: 'rgba(0,0,0,0.6)',
   },
-  tagTitle: { color: '#fff', fontWeight: '700' },
+  tagHeader: { flexDirection: 'row', alignItems: 'baseline', gap: Spacing.two },
+  tagTitle: { color: '#fff', fontWeight: '700', fontSize: 17, lineHeight: 22 },
+  tagTempo: { color: 'rgba(255,255,255,0.75)', fontSize: 14, lineHeight: 20 },
+  skip: { color: 'rgba(255,255,255,0.85)', fontWeight: '600', fontSize: 15, lineHeight: 20 },
   standby: {
     position: 'absolute',
     left: Spacing.five,

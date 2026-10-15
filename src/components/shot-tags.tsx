@@ -6,27 +6,39 @@ import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { CLUBS, RESULT_LABEL, SHOT_RESULTS, type Club, type ShotResult } from '@/lib/swing-notes';
 
+/** Two even rows of four, so the buttons line up and are easy to hit. */
+const RESULT_ROWS = [SHOT_RESULTS.slice(0, 4), SHOT_RESULTS.slice(4)];
+
 /** One tap per shot: what the ball did. Tapping the selected result clears it. */
 export function ResultChips({
   value,
   onChange,
   onDark = false,
+  size = 'md',
 }: {
   value: ShotResult | null;
   onChange: (result: ShotResult | null) => void;
   onDark?: boolean;
+  size?: 'md' | 'lg';
 }) {
   return (
-    <View style={styles.wrap}>
-      {SHOT_RESULTS.map((r) => (
-        <Chip
-          key={r}
-          compact
-          onDark={onDark}
-          label={RESULT_LABEL[r]}
-          selected={value === r}
-          onPress={() => onChange(value === r ? null : r)}
-        />
+    <View style={styles.rows}>
+      {RESULT_ROWS.map((row) => (
+        <View key={row[0]} style={styles.row}>
+          {row.map((r) => (
+            <Chip
+              key={r}
+              variant="option"
+              fill
+              size={size}
+              onDark={onDark}
+              icon={r === 'good' ? 'ion:checkmark' : undefined}
+              label={RESULT_LABEL[r]}
+              selected={value === r}
+              onPress={() => onChange(value === r ? null : r)}
+            />
+          ))}
+        </View>
       ))}
     </View>
   );
@@ -59,10 +71,10 @@ export function ClubPicker({
           </ThemedText>
           <View style={styles.grid}>
             {CLUBS.map((c) => (
-              <Chip key={c} label={c} selected={value === c} onPress={() => pick(c)} />
+              <Chip key={c} variant="option" label={c} selected={value === c} onPress={() => pick(c)} style={styles.club} />
             ))}
           </View>
-          <Chip label="No club" selected={value === null} onPress={() => pick(null)} />
+          <Chip variant="option" label="No club" selected={value === null} onPress={() => pick(null)} />
         </Pressable>
       </Pressable>
     </Modal>
@@ -70,7 +82,9 @@ export function ClubPicker({
 }
 
 const styles = StyleSheet.create({
-  wrap: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: Spacing.two },
+  rows: { gap: Spacing.two, alignSelf: 'stretch' },
+  row: { flexDirection: 'row', gap: Spacing.two },
+  club: { minWidth: 56 },
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: Spacing.four },
   card: { borderRadius: Spacing.four, padding: Spacing.four, gap: Spacing.three, alignItems: 'flex-start' },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },

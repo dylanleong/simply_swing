@@ -1,8 +1,10 @@
 import { Image } from 'expo-image';
 import { useMemo, useState } from 'react';
-import { Pressable, ScrollView, SectionList, StyleSheet, View } from 'react-native';
+import { Pressable, SectionList, StyleSheet, View } from 'react-native';
 
 import { Chip } from '@/components/chip';
+import { Icon } from '@/components/icon';
+import { Sheet, SheetRow } from '@/components/sheet';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -10,20 +12,24 @@ import {
   filterSwings,
   formatClipTime,
   formatSession,
+  formatTempoRatio,
+  formatTimeOfDay,
   groupSessions,
   NO_FILTER,
-  formatTempoRatio,
-  SOURCE_LABEL,
   type Swing,
   type SwingFilter,
 } from '@/lib/swing-library';
 import { CLUBS, notesSummary, RESULT_LABEL, SHOT_RESULTS } from '@/lib/swing-notes';
 
+/** A range session is dozens of swings: three across keeps a session to a screen or two. */
+const COLUMNS = 3;
+const STAR = '#FFC83D';
+
 type Row = { key: string; swings: Swing[] };
 
 /**
- * The swing grid: a filter bar (favourites, club, result) over swings grouped into practice
- * sessions. Used by the Swings tab and by "compare with…".
+ * The swing grid, grouped into practice sessions under sticky headers, with a filter (favourites,
+ * club, result) that stays out of the way in a sheet. Used by the Swings tab and "compare with…".
  */
 export function SwingBrowser({
   swings,
@@ -49,103 +55,138 @@ export function SwingBrowser({
   empty: string;
   bottomInset?: number;
 }) {
+  const theme = useTheme();
   const [filterOpen, setFilterOpen] = useState(false);
   const shown = useMemo(() => filterSwings(swings, filter), [swings, filter]);
   const sections = useMemo(
     () =>
       groupSessions(shown).map((session) => {
         const rows: Row[] = [];
-        for (let i = 0; i < session.swings.length; i += 2) {
-          const pair = session.swings.slice(i, i + 2);
-          rows.push({ key: pair.map((s) => s.id).join('|'), swings: pair });
+        for (let i = 0; i < session.swings.length; i += COLUMNS) {
+          const group = session.swings.slice(i, i + COLUMNS);
+          rows.push({ key: group.map((s) => s.id).join('|'), swings: group });
         }
         return { key: `${session.start}`, title: formatSession(session), count: session.swings.length, data: rows };
       }),
     [shown]
   );
   const filtering = filter.club != null || filter.result != null || filter.favorites;
-  const filterLabel = [filter.favorites && '★', filter.club, filter.result && RESULT_LABEL[filter.result]]
+  const summary = [filter.favorites && '★ Favourites', filter.club, filter.result && RESULT_LABEL[filter.result]]
     .filter(Boolean)
     .join(' · ');
 
   return (
-    <SectionList
-      sections={sections}
-      keyExtractor={(row) => row.key}
-      stickySectionHeadersEnabled={false}
-      contentContainerStyle={[styles.list, { paddingBottom: Spacing.four + bottomInset }]}
-      refreshing={refreshing}
-      onRefresh={onRefresh}
-      extraData={selected}
-      ListHeaderComponent={
-        swings.length > 0 ? (
-          <View style={styles.filters}>
-            <View style={styles.filterRow}>
+    <>
+      <SectionList
+        sections={sections}
+        keyExtractor={(row) => row.key}
+        stickySectionHeadersEnabled
+        contentContainerStyle={{ paddingBottom: Spacing.four + bottomInset }}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+        extraData={selected}
+        ListHeaderComponent={
+          swings.length > 0 ? (
+            <View style={styles.filterBar}>
               <Chip
-                compact
-                label={filtering ? `Filter: ${filterLabel}` : 'Filter'}
+                variant="option"
+                size="sm"
+                icon="ion:filter"
                 selected={filtering}
-                onPress={() => setFilterOpen((o) => !o)}
+                label={filtering ? summary : 'Filter'}
+                onPress={() => setFilterOpen(true)}
               />
-              {filtering && <Chip compact label="Clear" onPress={() => onFilterChange(NO_FILTER)} />}
+              {filtering && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear filter"
+                  hitSlop={8}
+                  onPress={() => onFilterChange(NO_FILTER)}>
+                  <Icon name="ion:close-circle" size={22} color={theme.textSecondary} />
+                </Pressable>
+              )}
             </View>
-            {filterOpen && (
-              <View style={styles.filterPanel}>
-                <Chip
-                  compact
-                  label="★ Favourites"
-                  selected={filter.favorites}
-                  onPress={() => onFilterChange({ ...filter, favorites: !filter.favorites })}
-                />
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                  <Chip compact label="Any club" selected={filter.club == null} onPress={() => onFilterChange({ ...filter, club: null })} />
-                  {CLUBS.map((c) => (
-                    <Chip key={c} compact label={c} selected={filter.club === c} onPress={() => onFilterChange({ ...filter, club: c })} />
-                  ))}
-                </ScrollView>
-                <View style={styles.wrapRow}>
-                  <Chip compact label="Any result" selected={filter.result == null} onPress={() => onFilterChange({ ...filter, result: null })} />
-                  {SHOT_RESULTS.map((r) => (
-                    <Chip
-                      key={r}
-                      compact
-                      label={RESULT_LABEL[r]}
-                      selected={filter.result === r}
-                      onPress={() => onFilterChange({ ...filter, result: r })}
-                    />
-                  ))}
-                </View>
-              </View>
-            )}
+          ) : null
+        }
+        renderSectionHeader={({ section }) => (
+          <View style={[styles.sectionHeader, { backgroundColor: theme.background }]}>
+            <ThemedText type="smallBold">{section.title}</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">
+              {`${section.count} swing${section.count === 1 ? '' : 's'}`}
+            </ThemedText>
           </View>
-        ) : null
-      }
-      renderSectionHeader={({ section }) => (
-        <ThemedText type="smallBold" themeColor="textSecondary" style={styles.sectionHeader}>
-          {`${section.title} · ${section.count} swing${section.count === 1 ? '' : 's'}`}
-        </ThemedText>
-      )}
-      renderItem={({ item }) => (
-        <View style={styles.row}>
-          {item.swings.map((s) => (
-            <SwingTile
-              key={s.id}
-              swing={s}
-              selecting={selected != null}
-              selected={selected?.has(s.id) ?? false}
-              onPress={() => onPress(s)}
-              onLongPress={onLongPress && (() => onLongPress(s))}
-            />
-          ))}
-          {item.swings.length === 1 && <View style={styles.tile} />}
+        )}
+        renderItem={({ item }) => (
+          <View style={styles.row}>
+            {item.swings.map((s) => (
+              <SwingTile
+                key={s.id}
+                swing={s}
+                selecting={selected != null}
+                selected={selected?.has(s.id) ?? false}
+                onPress={() => onPress(s)}
+                onLongPress={onLongPress && (() => onLongPress(s))}
+              />
+            ))}
+            {Array.from({ length: COLUMNS - item.swings.length }, (_, i) => (
+              <View key={i} style={styles.tile} />
+            ))}
+          </View>
+        )}
+        ListEmptyComponent={
+          <ThemedText themeColor="textSecondary" style={styles.empty}>
+            {swings.length > 0 ? 'No swings match this filter.' : empty}
+          </ThemedText>
+        }
+      />
+
+      <Sheet visible={filterOpen} onClose={() => setFilterOpen(false)} title="Show">
+        <SheetRow
+          icon="ion:star-outline"
+          label="Favourites only"
+          checked={filter.favorites}
+          onPress={() => onFilterChange({ ...filter, favorites: !filter.favorites })}
+        />
+        <View style={styles.sheetSection}>
+          <ThemedText type="smallBold" themeColor="textSecondary">
+            Club
+          </ThemedText>
+          <View style={styles.wrap}>
+            <Chip variant="option" size="sm" label="Any" selected={filter.club == null} onPress={() => onFilterChange({ ...filter, club: null })} />
+            {CLUBS.map((c) => (
+              <Chip
+                key={c}
+                variant="option"
+                size="sm"
+                label={c}
+                selected={filter.club === c}
+                onPress={() => onFilterChange({ ...filter, club: c })}
+              />
+            ))}
+          </View>
+          <ThemedText type="smallBold" themeColor="textSecondary">
+            Result
+          </ThemedText>
+          <View style={styles.wrap}>
+            <Chip variant="option" size="sm" label="Any" selected={filter.result == null} onPress={() => onFilterChange({ ...filter, result: null })} />
+            {SHOT_RESULTS.map((r) => (
+              <Chip
+                key={r}
+                variant="option"
+                size="sm"
+                label={RESULT_LABEL[r]}
+                selected={filter.result === r}
+                onPress={() => onFilterChange({ ...filter, result: r })}
+              />
+            ))}
+          </View>
+          <View style={styles.sheetButtons}>
+            <Chip label="Clear" fill onPress={() => onFilterChange(NO_FILTER)} />
+            <Chip variant="primary" label={`Show ${shown.length}`} fill onPress={() => setFilterOpen(false)} />
+          </View>
         </View>
-      )}
-      ListEmptyComponent={
-        <ThemedText themeColor="textSecondary">
-          {swings.length > 0 ? 'No swings match this filter.' : empty}
-        </ThemedText>
-      }
-    />
+      </Sheet>
+    </>
   );
 }
 
@@ -164,12 +205,7 @@ function SwingTile({
 }) {
   const theme = useTheme();
   const tags = notesSummary(swing.notes);
-  const details = [
-    tags || (swing.source && SOURCE_LABEL[swing.source]),
-    swing.tempo ? formatTempoRatio(swing.tempo) : swing.durationMs && `${(swing.durationMs / 1000).toFixed(1)} s`,
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  const badge = [tags, swing.tempo && formatTempoRatio(swing.tempo)].filter(Boolean).join(' · ');
 
   return (
     <Pressable
@@ -186,74 +222,98 @@ function SwingTile({
           selected && { borderColor: theme.accent, borderWidth: 3 },
         ]}>
         {swing.thumbUri && <Image source={swing.thumbUri} style={StyleSheet.absoluteFill} contentFit="cover" />}
-        {swing.notes.favorite && <ThemedText style={styles.star}>★</ThemedText>}
-        {swing.angle && (
-          <View style={styles.badge}>
-            <ThemedText style={styles.badgeText}>2 angles</ThemedText>
+        {swing.notes.favorite && (
+          <View style={styles.star}>
+            <Icon name="ion:star" size={16} color={STAR} />
           </View>
         )}
+        {swing.angle && !selecting && (
+          <View style={styles.angles}>
+            <Icon name="ion:albums-outline" size={14} color="#fff" />
+          </View>
+        )}
+        {badge ? (
+          <View style={styles.badge}>
+            <ThemedText style={styles.badgeText} numberOfLines={1}>
+              {badge}
+            </ThemedText>
+          </View>
+        ) : null}
         {selecting && (
           <View
             style={[
               styles.check,
               selected ? { backgroundColor: theme.accent, borderColor: theme.accent } : styles.checkEmpty,
             ]}>
-            {selected && <ThemedText style={styles.checkMark}>✓</ThemedText>}
+            {selected && <Icon name="ion:checkmark" size={16} color="#fff" />}
           </View>
         )}
       </View>
-      <ThemedText type="smallBold">{formatClipTime(swing.createdAt)}</ThemedText>
-      {details ? (
-        <ThemedText type="small" themeColor="textSecondary">
-          {details}
-        </ThemedText>
-      ) : null}
+      <ThemedText type="small" themeColor="textSecondary">
+        {formatTimeOfDay(swing.createdAt)}
+      </ThemedText>
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  list: { paddingHorizontal: Spacing.three, gap: Spacing.three },
-  filters: { gap: Spacing.two },
-  filterRow: { flexDirection: 'row', gap: Spacing.two },
-  filterPanel: { gap: Spacing.two, alignItems: 'flex-start' },
-  chipRow: { gap: Spacing.two },
-  wrapRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
-  sectionHeader: { marginTop: Spacing.two },
-  row: { flexDirection: 'row', gap: Spacing.three },
+  filterBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    paddingBottom: Spacing.two,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
+  row: { flexDirection: 'row', gap: Spacing.two, paddingHorizontal: Spacing.three, marginBottom: Spacing.three },
   tile: { flex: 1, gap: Spacing.one },
   thumb: { width: '100%', aspectRatio: 9 / 16, borderRadius: Spacing.two, overflow: 'hidden' },
   star: {
     position: 'absolute',
     top: Spacing.one,
-    left: Spacing.two,
-    color: '#FFD54F',
-    fontSize: 22,
-    lineHeight: 28,
-    textShadowColor: 'rgba(0,0,0,0.6)',
-    textShadowRadius: 3,
+    left: Spacing.one,
+    padding: 3,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.45)',
   },
+  angles: {
+    position: 'absolute',
+    top: Spacing.one,
+    right: Spacing.one,
+    padding: 4,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  badge: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: Spacing.one + 2,
+    paddingVertical: Spacing.one,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  badgeText: { color: '#fff', fontSize: 12, lineHeight: 16, fontWeight: '700' },
   check: {
     position: 'absolute',
-    top: Spacing.two,
-    right: Spacing.two,
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+    top: Spacing.one,
+    right: Spacing.one,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  badge: {
-    position: 'absolute',
-    left: Spacing.two,
-    bottom: Spacing.two,
-    paddingHorizontal: Spacing.two,
-    paddingVertical: Spacing.half,
-    borderRadius: Spacing.two,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-  },
-  badgeText: { color: '#fff', fontSize: 12, lineHeight: 16, fontWeight: '700' },
   checkEmpty: { borderColor: '#fff', backgroundColor: 'rgba(0,0,0,0.3)' },
-  checkMark: { color: '#fff', fontWeight: '700', lineHeight: 20 },
+  empty: { paddingHorizontal: Spacing.three },
+  sheetSection: { paddingHorizontal: Spacing.four, gap: Spacing.two, paddingTop: Spacing.two },
+  wrap: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two, marginBottom: Spacing.two },
+  sheetButtons: { flexDirection: 'row', gap: Spacing.two, paddingTop: Spacing.two },
 });

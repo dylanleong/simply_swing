@@ -1,53 +1,96 @@
-import { Pressable, StyleSheet } from 'react-native';
+import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 
+import { Icon, type IconName } from '@/components/icon';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
-/** A rounded button for control rows. `onDark` is for chips drawn over the camera or a video. */
+/**
+ * One look per role, so options never look like actions or navigation:
+ * - `option`: a choice or toggle. Outlined; selected = accent outline, tint and text.
+ * - `action`: does something. Filled neutral.
+ * - `primary`: the one main action on a screen. Filled accent.
+ * - `danger`: destroys something. Neutral with red text.
+ * `onDark` is for chips over the camera or a video.
+ */
+export type ChipVariant = 'option' | 'action' | 'primary' | 'danger';
+
 export function Chip({
   label,
   onPress,
+  variant = 'action',
   selected = false,
-  danger = false,
   onDark = false,
-  compact = false,
+  size = 'md',
+  icon,
+  fill = false,
+  style,
   accessibilityLabel,
 }: {
   label: string;
   onPress: () => void;
+  variant?: ChipVariant;
   selected?: boolean;
-  danger?: boolean;
   onDark?: boolean;
-  compact?: boolean;
+  size?: 'sm' | 'md' | 'lg';
+  icon?: IconName;
+  /** Share a row's width equally with its siblings. */
+  fill?: boolean;
+  style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
 }) {
   const theme = useTheme();
-  const idle = onDark ? 'rgba(0,0,0,0.6)' : theme.backgroundElement;
-  const background = selected ? theme.accent : idle;
-  const color = selected || onDark ? '#fff' : danger ? theme.danger : theme.text;
+  let background: string = theme.backgroundElement;
+  let border = 'transparent';
+  let color: string = theme.text;
+  if (variant === 'option') {
+    background = selected ? theme.accentSoft : 'transparent';
+    border = selected ? theme.accent : theme.border;
+    color = selected ? theme.accent : theme.text;
+    if (onDark) {
+      background = selected ? theme.accent : 'rgba(0,0,0,0.55)';
+      border = selected ? theme.accent : 'rgba(255,255,255,0.55)';
+      color = '#fff';
+    }
+  } else if (variant === 'primary') {
+    background = theme.accent;
+    color = '#fff';
+  } else if (variant === 'danger') {
+    color = theme.danger;
+  } else if (onDark) {
+    background = 'rgba(0,0,0,0.6)';
+    color = '#fff';
+  }
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ selected }}
+      accessibilityState={variant === 'option' ? { selected } : undefined}
       accessibilityLabel={accessibilityLabel ?? label}
       onPress={onPress}
-      hitSlop={compact ? 4 : 0}
       style={({ pressed }) => [
         styles.chip,
-        compact && styles.compact,
-        { backgroundColor: background, opacity: pressed ? 0.7 : 1 },
-        // Over a dark picture a dark chip disappears; an outline keeps it a button.
-        onDark && !selected && styles.outlined,
+        styles[size],
+        fill && styles.fill,
+        { backgroundColor: background, borderColor: border, opacity: pressed ? 0.6 : 1 },
+        style,
       ]}>
-      <ThemedText style={[{ color }, compact && styles.compactText]}>{label}</ThemedText>
+      <View style={styles.content}>
+        {icon && <Icon name={icon} size={size === 'sm' ? 16 : 18} color={color} />}
+        <ThemedText numberOfLines={1} style={[styles.text, size === 'sm' && styles.smallText, { color }]}>
+          {label}
+        </ThemedText>
+      </View>
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  chip: { paddingHorizontal: Spacing.three, paddingVertical: Spacing.two, borderRadius: Spacing.four },
-  compact: { paddingHorizontal: Spacing.two + 2, paddingVertical: Spacing.one + 2 },
-  compactText: { fontSize: 14, lineHeight: 18 },
-  outlined: { borderWidth: 1, borderColor: 'rgba(255,255,255,0.55)' },
+  chip: { borderWidth: 1, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
+  sm: { minHeight: 32, paddingHorizontal: Spacing.two + 4 },
+  md: { minHeight: 40, paddingHorizontal: Spacing.three },
+  lg: { minHeight: 48, paddingHorizontal: Spacing.three, borderRadius: Spacing.three },
+  fill: { flex: 1, paddingHorizontal: Spacing.one },
+  content: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one + 2 },
+  text: { fontSize: 15, lineHeight: 20, fontWeight: '600' },
+  smallText: { fontSize: 13, lineHeight: 18 },
 });
