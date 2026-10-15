@@ -83,6 +83,8 @@ final class PeerLink {
   private var target: NWEndpoint?
   /// Main role: an outgoing connection that isn't ready yet.
   private var connecting: NWConnection?
+  /// Main role: the user asked to connect; report if it fails (the 1 s retries stay silent).
+  private var reportConnectFailure = false
   private var lastStatus: Status?
   /// Main role: sync uncertainty when each pending trigger was sent, for the angle sidecar.
   private var triggerSyncMs: [String: Double] = [:]
@@ -147,6 +149,7 @@ final class PeerLink {
         return
       }
       target = endpoint
+      reportConnectFailure = true
       connection?.close("switching camera")
       connecting?.cancel()
       connecting = nil
@@ -298,6 +301,7 @@ final class PeerLink {
       switch state {
       case .ready:
         self.connecting = nil
+        self.reportConnectFailure = false
         guard self.role == .main, self.target == endpoint else {
           nw.cancel()
           return
@@ -308,6 +312,7 @@ final class PeerLink {
         NSLog("SwingPeerLink: connect to \(endpoint) failed: \(error)")
         self.connecting = nil
         nw.cancel()
+        self.connectFailed(endpoint)
       default:
         break
       }
@@ -317,7 +322,17 @@ final class PeerLink {
       guard let self, let nw, self.connecting === nw else { return }
       self.connecting = nil
       nw.cancel()
+      self.connectFailed(endpoint)
     }
+  }
+
+  private func connectFailed(_ endpoint: NWEndpoint) {
+    guard reportConnectFailure, role == .main, target == endpoint else { return }
+    reportConnectFailure = false
+    host?.peerError(
+      code: "E_PEER_CONNECT",
+      message: "Couldn't reach the camera phone. Check both phones are on the same Wi-Fi and it shows its camera screen."
+    )
   }
 
   private func adopt(_ nw: NWConnection, started: Bool) {

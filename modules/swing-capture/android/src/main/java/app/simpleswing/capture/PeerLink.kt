@@ -96,6 +96,8 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
   /** Main role: where to reconnect after the link drops. */
   private var target: InetSocketAddress? = null
   private var connecting = false
+  /** Main role: the user asked to connect; report if it fails (the 1 s retries stay silent). */
+  private var reportConnectFailure = false
   private var lastStatus: Status? = null
   /** Main role: sync uncertainty when each pending trigger was sent, for the angle sidecar (any thread). */
   private val triggerSyncMs = ConcurrentHashMap<String, Double>()
@@ -145,6 +147,7 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
       return@post
     }
     target = address
+    reportConnectFailure = true
     connection?.close("switching camera")
     connectTo(address)
   }
@@ -251,6 +254,7 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
         socket.connect(InetSocketAddress(address.hostString, address.port), CONNECT_TIMEOUT_MS)
         handler.post {
           connecting = false
+          reportConnectFailure = false
           if (role != PeerRole.MAIN || target != address) {
             socket.close()
             return@post
@@ -258,7 +262,13 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
           adopt(socket)
         }
       } catch (e: IOException) {
-        handler.post { connecting = false }
+        handler.post {
+          connecting = false
+          if (reportConnectFailure && role == PeerRole.MAIN && target == address) {
+            reportConnectFailure = false
+            host.onError("E_PEER_CONNECT", CONNECT_FAILED_MESSAGE)
+          }
+        }
         Log.i(TAG, "Connect to $address failed: ${e.message}")
       }
     }
@@ -602,6 +612,8 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
     private const val TICK_MS = 1_000L
     private const val SILENCE_TIMEOUT_MS = 6_000L
     private const val CONNECT_TIMEOUT_MS = 3_000
+    private const val CONNECT_FAILED_MESSAGE =
+      "Couldn't reach the camera phone. Check both phones are on the same Wi-Fi and it shows its camera screen."
 
     /** `host`, `host:port` or `[v6]:port`; null if it isn't one. */
     fun parseAddress(text: String): InetSocketAddress? {

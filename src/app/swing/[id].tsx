@@ -8,6 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { CLIP_BUFFER_OPTIONS } from '@/lib/clip-playback';
 import { angleLabels, angleTimeSec, driftCorrectionSec, formatSync, nudgeStepMs } from '@/lib/multicam';
 import { saveSwingToPhotos, shareSwing } from '@/lib/swing-export';
 import { formatClipTime, SOURCE_LABEL, type Angle, type Swing } from '@/lib/swing-library';
@@ -70,6 +71,7 @@ function Review({ swing }: { swing: Swing }) {
   const angle: Angle | null = useMemo(() => (swing.angle ? { ...swing.angle, nudgeMs } : null), [swing.angle, nudgeMs]);
 
   const setup = (p: VideoPlayer) => {
+    p.bufferOptions = CLIP_BUFFER_OPTIONS;
     p.loop = true;
     p.muted = true;
     p.playbackRate = DEFAULT_RATE;

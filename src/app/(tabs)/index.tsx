@@ -13,7 +13,7 @@ import { GolferBox, type PreviewFrame } from '@/components/golfer-box';
 import { SecondCameraSheet } from '@/components/second-camera-sheet';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
-import { useMainPeerLink } from '@/hooks/use-main-peer-link';
+import { PAIRING_ERROR_CODES, useMainPeerLink } from '@/hooks/use-main-peer-link';
 import { useTheme } from '@/hooks/use-theme';
 import {
   clampRoi,
@@ -24,6 +24,7 @@ import {
   type RoiBounds,
 } from '@/lib/capture-settings';
 import { loadCaptureSettings, saveCaptureSettings } from '@/lib/capture-settings-store';
+import { CLIP_BUFFER_OPTIONS } from '@/lib/clip-playback';
 import { idlePhase, shouldDim, type IdlePhase } from '@/lib/idle';
 import { formatSync } from '@/lib/multicam';
 import { dimScreen, restoreScreen } from '@/lib/screen-dimmer';
@@ -164,6 +165,7 @@ function Recorder() {
   const format = stateEvent?.format;
 
   const player = useVideoPlayer(null, (p) => {
+    p.bufferOptions = CLIP_BUFFER_OPTIONS;
     p.loop = true;
     p.muted = true;
   });
@@ -210,7 +212,9 @@ function Recorder() {
 
   useEffect(() => {
     const subs = [
-      SwingCapture.addListener('onError', (e) => setError(e.message)),
+      SwingCapture.addListener('onError', (e) => {
+        if (!PAIRING_ERROR_CODES.includes(e.code)) setError(e.message);
+      }),
       // A new swing interrupts the replay so the golfer sees the latest one.
       SwingCapture.addListener('onTrigger', () => {
         markActive();
@@ -393,9 +397,16 @@ function Recorder() {
       )}
 
       {clip && (
-        <Pressable style={StyleSheet.absoluteFill} onPress={() => setClip(null)}>
+        <View style={StyleSheet.absoluteFill}>
           <VideoView player={player} style={StyleSheet.absoluteFill} contentFit="contain" nativeControls={false} />
-        </Pressable>
+          {/* On top, not around: the native video view swallows touches on Android. */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close replay"
+            style={StyleSheet.absoluteFill}
+            onPress={() => setClip(null)}
+          />
+        </View>
       )}
 
       {/* Top: status + one instruction. Tap the pill for live levels. */}
@@ -546,6 +557,8 @@ function Recorder() {
         visible={showCameraSheet}
         status={link.status}
         peers={link.peers}
+        connecting={link.connecting}
+        connectError={link.connectError}
         onConnect={link.connect}
         onStop={() => {
           link.turnOff();

@@ -15,6 +15,8 @@ export function SecondCameraSheet({
   visible,
   status,
   peers,
+  connecting,
+  connectError,
   onConnect,
   onStop,
   onClose,
@@ -22,6 +24,9 @@ export function SecondCameraSheet({
   visible: boolean;
   status: PeerStatusEvent | null;
   peers: PeerInfo[];
+  /** The peer id or address being connected to, until it connects or fails. */
+  connecting: string | null;
+  connectError: string | null;
   onConnect: (idOrAddress: string) => void;
   onStop: () => void;
   onClose: () => void;
@@ -55,6 +60,20 @@ export function SecondCameraSheet({
                 Use as second camera. Put both phones on the same Wi-Fi, or turn on one phone&apos;s hotspot and
                 join it from the other.
               </ThemedText>
+            )}
+
+            {!connected && (connecting || connectError) && (
+              <View style={[styles.connected, { backgroundColor: theme.backgroundElement }]}>
+                {connecting ? (
+                  <ThemedText type="smallBold">
+                    Connecting to {peers.find((p) => p.id === connecting)?.name ?? connecting}…
+                  </ThemedText>
+                ) : (
+                  <ThemedText type="small" style={{ color: theme.danger }}>
+                    {connectError}
+                  </ThemedText>
+                )}
+              </View>
             )}
 
             {!connected && (

@@ -1,6 +1,6 @@
 # SimpleSwing: status and hand-over
 
-_Last updated 2026-10-13. The plan is in [`PLAN.md`](PLAN.md); this file records what has actually been built, what was learned on real devices, and what comes next._
+_Last updated 2026-10-15. The plan is in [`PLAN.md`](PLAN.md); this file records what has actually been built, what was learned on real devices, and what comes next._
 
 ## Where we are
 
@@ -12,7 +12,7 @@ _Last updated 2026-10-13. The plan is in [`PLAN.md`](PLAN.md); this file records
 | Swings library, review (speeds, frame step), multi-delete | ✅ Verified | Shared JS |
 | Save to Photos / Share (slow-motion export) | ✅ Built | 🟡 Ported (re-encodes; see below) |
 | Settings (fps, clip length, sensitivity, sharp, battery, storage) | ✅ Built | Shared JS |
-| Second phone as a second camera (multicam) | 🟡 Built and unit-tested, **never run on a phone** (the release build was interrupted) | 🟡 Ported, never compiled |
+| Second phone as a second camera (multicam) | ✅ First two-phone run worked (HONOR main + OnePlus 9 camera, in sync ±11 ms) | 🟡 Ported, never compiled |
 | Watch: tap-to-save remote | 🟡 Wear OS app built (`wear/`), never run on a watch | ⬜ Apple Watch: Phase 6 |
 | Watch: wrist swing detection + sound fusion | 🟡 Built and unit-tested, **never run on a watch** (OnePlus Watch 2R to come) | ⬜ Phase 6 (needs HealthKit, paid account) |
 | Purchases / paywall | ⬜ | ⬜ |
@@ -82,7 +82,7 @@ A second phone running SimpleSwing films another angle of the same swing (face o
   - `E_PEER_CLIP`: the transfer was cut short.
   - `E_PEER_VERSION`: the two phones run different app versions.
   - `E_PEER_PERMISSION` (iOS): the Local Network permission was refused.
-- **Not done yet:** a real two-phone run, the paywall gate (it's a paid add-on in the plan), and Save/Share of both angles side by side.
+- **Not done yet:** a two-phone run at the range, the paywall gate (it's a paid add-on in the plan), and Save/Share of both angles side by side.
 
 ### Testing with one phone (Android, over adb)
 
@@ -157,9 +157,14 @@ Test phone: HONOR VKP-NX9, Android 16 (MagicOS), Qualcomm. It records 1080p at 1
 5. **The phone's microphone hears screen taps** at −30 to −50 dB. That is why the detector has an absolute loudness floor (−32 dB at medium; −24 low, −40 high) and mutes for 1.5 s after a touch. Touch-mute is Android-only so far.
 6. **The `logcat` buffer is tiny** (256 KB) and HONOR's camera service floods it. Run `adb logcat -G 16M` and filter by tag (`-s SwingCaptureEngine:I`).
 7. **Release Gradle builds run out of memory at 2 GB** (lint). Pass `-Dorg.gradle.jvmargs=-Xmx6g`.
-8. **Android's Wear OS link isn't present on the test phone** (`Wearable.API is not available`). The watch model is still unconfirmed. If it's a HONOR watch, it can't run Wear OS apps.
+8. **expo-video's Android default buffer is ~130 MB per player**, refilled on every loop, all on the Java heap (limit 384 MB on the HONOR). Two review players, or the capture replay plus the camera's ring, crashed the app with an OOM. Every player now uses `CLIP_BUFFER_OPTIONS` (`src/lib/clip-playback.ts`, 24 MB cap); live heap is ~55–65 MB in every screen. Any new `useVideoPlayer` must use it too.
+9. **expo-video's native view swallows touches on Android.** A `Pressable` wrapped *around* a `VideoView` never fires; put the `Pressable` on top as a sibling.
+10. **VMware USB passthrough drops phones** whenever they re-enumerate (accepting the debugging prompt, unlocking, switching USB mode). Reattach via VM → Removable Devices. The VM sits on VMware NAT (192.168.136.x), so the phones can't reach it over Wi-Fi; the `multicam-peer.py` tunnel only works while USB stays attached.
+11. **Android's Wear OS link isn't present on the test phone** (`Wearable.API is not available`). The watch model is still unconfirmed. If it's a HONOR watch, it can't run Wear OS apps.
 
-Measured on the phone (2026-10-12, golfer about 3 m away):
+**Second test phone: OnePlus 9 (LE2113), Android 14.** 1080p @ 120 fps high-speed; its encoder stamps frames on the declared clock (offset 0). In dim indoor light, sensor noise alone reads ~52% "motion" in the golfer box, so the threshold climbs above 100% and auto-trigger can't fire. Check this in daylight before tuning; the motion gate may need noise-aware thresholds.
+
+Measured on the HONOR (2026-10-12, golfer about 3 m away):
 - **Motion is the percentage of golfer-box pixels that changed** (|Δluma| ≥ 18) between preview frames taken 1/15 s apart.
 - **Still** at address reads **0–2%**. **Swings and body movement** read **10–90%**. The threshold is 3× the scene's quiet level, with a floor of 1%.
 - The first version measured the *mean* change instead. It read only ~0.7 for a full swing (threshold 4), so nothing saved. Don't go back to that.
@@ -210,7 +215,7 @@ Expect compile errors. The Swift was written blind against the SDK 57 sources. P
 
 ## Next steps, in order
 
-1. **Multicam on the HONOR:** finish the interrupted release build and run the adb tests in "Second camera" above. Then do a real two-phone run.
+1. **Multicam:** the first two-phone run worked (2026-10-15). Still to check: clap alignment frame by frame, and why one SAVE got `REJECT busy` from the camera phone (probably still waking from standby right after the main phone's app restarted).
 2. **Range session** with the current Android build. Record Levels readings (dB, "swing P/T", shutter) for your strikes versus neighbours'. Also measure battery and warmth over 1 hour.
 3. **iOS first build** on the Mac and fix compile errors. Then work through the checklist above.
 4. **Tune thresholds** from the range data, on both platforms. The constants are `ImpactDetector.minLevelDb/marginDb` and `MotionGate.minMotion/thresholdFactor`.
