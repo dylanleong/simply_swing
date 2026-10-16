@@ -13,12 +13,12 @@ _Last updated 2026-10-16. The plan is in [`PLAN.md`](PLAN.md); this file records
 | Save to Photos / Share (slow-motion export) | ✅ Built | 🟡 Ported (re-encodes; see below) |
 | Settings (fps, clip length, sensitivity, sharp, battery, storage) | ✅ Built | Shared JS |
 | Second phone as a second camera (multicam) | ✅ First two-phone run worked (HONOR main + OnePlus 9 camera, in sync ±11 ms) | 🟡 Ported, never compiled |
-| Watch: tap-to-save remote | 🟡 Wear OS app built (`wear/`), never run on a watch | ⬜ Apple Watch: Phase 6 |
-| Watch: wrist swing detection + sound fusion | 🟡 Built and unit-tested, **never run on a watch** (OnePlus Watch 2R to come) | ⬜ Phase 6 (needs HealthKit, paid account) |
+| Watch: tap-to-save remote | 🟡 Wear OS app built (`wear/`), never run on a watch | 🟡 Apple Watch app written (`targets/watch/`), **never compiled** |
+| Watch: wrist swing detection + sound fusion | 🟡 Built and unit-tested, **never run on a watch** (OnePlus Watch 2R to come) | 🟡 Written (golf workout + 100 Hz motion); detector/fusion unit-tested on Linux; never compiled |
 | Shot tags, club, favourites, filters, practice sessions | ✅ Verified on the HONOR | Shared JS |
 | Review tools: plane / line / circle / angle, grid, mirror; compare two swings | ✅ Verified on the HONOR | Shared JS (mirror relies on the video view's transform) |
 | Camera level check (accelerometer) | 🟡 Built; only checked lying flat (stays quiet). Check the tilt direction by hand | 🟡 Untested: the accelerometer's sign may differ |
-| Tempo (backswing : downswing from the wrist) | 🟡 Watch + phone built and unit-tested, **never run on a watch** | ⬜ Phase 6 |
+| Tempo (backswing : downswing from the wrist) | 🟡 Watch + phone built and unit-tested, **never run on a watch** | 🟡 Written, unit-tested on Linux |
 | Help & tips screen | ✅ Verified | Shared JS |
 | Release hardening (pairing code, safe writes, chime, permissions; see below) | 🟡 Built, unit-tested; device check pending | 🟡 Written, never compiled |
 | Purchases / paywall | ⬜ | ⬜ |
@@ -92,6 +92,18 @@ From a pre-release audit of the whole codebase. Release documents: `docs/release
 - **Robustness:** mic read errors stop the pipeline with `E_AUDIO` instead of spinning; `createSession` failures are caught; config/ROI values from JS are clamped (NaN-safe); the watch stops sensing after 2 min without any phone message; the peer link stops when the module is destroyed.
 - **iOS-only:** mic refusal records video-only instead of failing; the app configures `AVAudioSession` itself (`.playAndRecord` + `.mixWithOthers`) and re-applies it when expo-video changes the category, so replays don't cut the mic; `UIRequiresFullScreen` (iPad, portrait only).
 - **Accessibility:** scrubber is adjustable by screen readers; text in fixed-size controls is capped at 1.2–1.3× font scale.
+
+## Apple Watch (added 2026-10-16, written blind)
+
+1.0 ships the iPhone second camera, the Wear OS app and an Apple Watch app with the same features. All of the iOS/watchOS code waits for a Mac to be compiled.
+
+- **Watch app:** `targets/watch/` (`@bacons/apple-targets`, type `watch`, watchOS 10, bundle `app.simpleswing.watchkitapp`, HealthKit entitlement). Prebuild (checked on Linux in a scratch copy) generates the `SimpleSwingWatch` target embedded in the iOS app. It writes `targets/watch/Assets.xcassets` (git-ignored).
+  - `SwingDetector.swift` is a line-for-line port of the Wear OS detector (same constants and tempo logic; the Kotlin test cases pass in Docker `swift:5.10`).
+  - `SwingSensor.swift`: a golf `HKWorkoutSession` keeps the app running with the screen off; `CMMotionManager` device motion at 100 Hz feeds the detector; heartbeat every 5 s; stops after 2 min of phone idle or silence, or 3 h. **Nothing is saved to Health** (no workout builder). Without Health permission it senses only while on screen.
+  - `PhoneLink.swift` is the only `WCSession` delegate; `WatchModel.swift` ties it to the screen and haptics (saved = success, rejected = failure).
+- **Phone side:** `modules/swing-capture/ios/WatchBridge.swift` mirrors `WearBridge.kt`; `TriggerFusion.swift` and `WristTempo.swift` are ports (Kotlin test cases pass in Docker); `CaptureEngine.swift` wires fusion, practice swings, tempo in the sidecar, `saved` and state broadcasts, as on Android.
+- **Messages** (WatchConnectivity `sendMessage`, no reply handler; `t` is always the type): watch → phone `hello`, `trigger`, `swing` {ageMs, peakDps, backswingMs?, downswingMs?}, `heartbeat`, `pong` {ns}; phone → watch `state` {state}, `saved`, `rejected` {state}, `config` {mode}, `ping` {ns}. The phone also keeps the application context `{mode, state}` current. Nothing falls back to `transferUserInfo`: a late trigger or swing would do harm.
+- **To verify on the first Mac build:** the `// VERIFY:` comments in `WatchBridge.swift`, `PhoneLink.swift` and `SwingSensor.swift` (WCSession delegate signatures, workout recovery, whether motion timestamps share the uptime clock); haptics and 100 Hz motion with the wrist down; whether `config` "auto" arriving in the background can start the workout. Enable HealthKit for `app.simpleswing.watchkitapp` in the developer portal. Optional later: start the watch from the phone with `HKHealthStore.startWatchApp(with:)` (needs HealthKit on the phone too).
 
 ## Watch: how wrist detection works (Wear OS)
 
@@ -274,7 +286,7 @@ Expect compile errors. The Swift was written blind against the SDK 57 sources. P
 ### Not yet on iOS
 
 - Touch-mute of the impact detector (Android catches touches natively). On iOS it needs a JS→native "user touched" call or a window gesture recogniser.
-- Apple Watch remote (WatchConnectivity), Phase 6.
+- Apple Watch: written (see "Apple Watch" above), not yet compiled.
 
 ## Signing and accounts
 

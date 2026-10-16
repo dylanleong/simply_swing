@@ -7,7 +7,7 @@ enum TriggerSource: String {
   case volumeKey
   case watch
   case impact
-  /// A wrist swing from the watch with no impact sound (practice swing). Apple Watch: Phase 6.
+  /// A wrist swing from the watch with no impact sound (practice swing).
   case wrist
 
   var isAuto: Bool { self == .watch || self == .impact || self == .wrist }
@@ -66,8 +66,9 @@ struct CaptureConfigRecord: Record {
   @Field var sharpMode: Bool = false
   @Field var autoTrigger: Bool = true
   @Field var impactTrigger: Bool = true
-  /// Apple Watch support is Phase 6; accepted so the shared JS config decodes on iOS.
+  /// Apple Watch: auto = sense wrist swings (sound + wrist fusion), tap = SAVE button only, off = ignore it.
   @Field var watchMode: String = "auto"
+  /// With the watch sensing: save wrist swings that had no impact sound (source `wrist`).
   @Field var savePracticeSwings: Bool = false
   /// Chime when a swing is saved (main / solo phone only). Older JS without the field gets it on.
   @Field var savedSound: Bool = true
@@ -87,6 +88,8 @@ struct CaptureConfigRecord: Record {
       sharpMode: sharpMode,
       autoTrigger: autoTrigger,
       impactTrigger: impactTrigger,
+      watchMode: WatchBridge.modes.contains(watchMode) ? watchMode : WatchBridge.modeAuto,
+      savePracticeSwings: savePracticeSwings,
       savedSound: savedSound
     )
   }
@@ -103,6 +106,9 @@ struct CaptureConfig {
   var sharpMode: Bool
   var autoTrigger: Bool
   var impactTrigger: Bool
+  /// WatchBridge.modeAuto / modeTap / modeOff.
+  var watchMode: String
+  var savePracticeSwings: Bool
   var savedSound: Bool
 }
 

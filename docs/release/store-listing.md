@@ -107,7 +107,7 @@ Your swings stay on your device. There's no sign-in, no subscription, no ads and
 
 CAPTURE
 • Saves automatically on the sound of impact, gated by movement in an adjustable golfer box
-• Or save with the on-screen SAVE button, a volume button or a cheap Bluetooth camera remote, right after you swing
+• Or save with the on-screen SAVE button, a volume button, a cheap Bluetooth camera remote or your Apple Watch, right after you swing
 • 120 fps slow motion, and 240 fps where your device supports it
 • Sharp mode for a crisp club in daylight
 • Level indicator so the camera is straight
@@ -125,11 +125,19 @@ REVIEW
 TWO ANGLES (OPTIONAL)
 Have a second iPhone or an iPad? Run SimpleSwing on it as a second camera. Film down the line and face on at the same time, and every saved swing is recorded from both angles, in sync. Review them side by side, or save one side-by-side video. The devices talk directly over your Wi-Fi, a hotspot or peer-to-peer Wi-Fi. Nothing goes over the internet.
 
+APPLE WATCH (OPTIONAL)
+Wear your Apple Watch on your lead wrist and open SimpleSwing on it to:
+• Save a swing with a tap on your wrist
+• Sense your swing: only shots where your own wrist swung are saved, even at a busy range
+• See your tempo (backswing : downswing) for every swing
+• Feel a tap on your wrist when a swing is saved
+Swing sensing runs as a golf workout so it keeps working with the screen off. Nothing is saved to Health.
+
 WHAT YOU NEED
 • A tripod or stand. The app watches for movement where you stand, so the device must stay still.
 • Good light. Slow motion needs it: outdoors, or a bright room.
 • Frame rates depend on your device. Volume-button saving needs iOS 17.2 or later.
-• A second device is optional.
+• A second device and an Apple Watch are optional.
 
 BUILT-IN HELP
 Setup guides for down-the-line and face-on camera positions, what to look for with the plane line, head circle and angles, and troubleshooting, all available offline.
@@ -143,6 +151,7 @@ Questions or problems: [contact email]
 > - **Frame rates:** the "240 fps" and "⅛ speed" claims match `CaptureSettings.fps` and the review speeds. Confirm on the first iOS device run that 240 fps is offered on the test iPhone.
 > - **Remove the TWO ANGLES section** from either store's copy if multicam ends up gated behind a purchase or isn't verified on that platform by submission. On iOS it has never been compiled.
 > - **Remove the Wear OS section** from the Play copy if the watch app isn't uploaded with 1.0.
+> - **Apple Watch section:** keep it only once the watch app has run on a real watch (it's written but not yet compiled). Recount the length after edits (limit 4000).
 
 ## Promotional text (App Store, ≤ 170, editable without review)
 
@@ -155,7 +164,7 @@ Hit the ball and your swing is already playing back in slow motion. Hands-free, 
 
 **App Store (version notes):**
 ```
-The first release of SimpleSwing. Hands-free swing capture on the impact sound, slow-motion replay, drawing tools, side-by-side compare, shot tags, and an optional second-device camera angle.
+The first release of SimpleSwing. Hands-free swing capture on the impact sound, slow-motion replay, drawing tools, side-by-side compare, shot tags, an optional second-device camera angle, and an Apple Watch app that senses your swing and shows your tempo.
 ```
 
 **Google Play (release notes, ≤ 500 per language):**
@@ -204,7 +213,7 @@ Add an `<en-US>` block with the same text if you add an en-US listing. The copy 
 | iPhone with Dynamic Island, **medium** | **Yes. At least 1.** Apple's page lists this as the iPhone minimum | 1206 × 2622 or 1179 × 2556 | iPhone 16 / 17 class phone, or Simulator |
 | iPhone with Dynamic Island, **large** (6.9") | Optional, recommended (the largest shows best) | 1320 × 2868, 1290 × 2796 or 1260 × 2736 | iPhone 16/17 Pro Max class, or Simulator |
 | iPad **13"** | **Yes**, because `supportsTablet: true` | 2064 × 2752 or 2048 × 2732 | iPad Pro 13" / iPad Air 13" Simulator, or upscale cautiously |
-| Apple Watch | Not needed for 1.0 (no watchOS app yet) | — | — |
+| Apple Watch | **Yes**, the 1.0 includes a watch app (verify the current required watch size on Apple's page) | e.g. 422 × 514 (Ultra), 416 × 496 (Series 10/11 46 mm) | Watch screenshots (press side button + Digital Crown) or watch Simulator |
 
 - **Limits:** 1–10 screenshots per size, PNG or JPEG, no transparency.
 - **Older guidance:** this said "6.9" required, else 6.5"". Apple's page now names the medium Dynamic Island size as the minimum, so **verify**. Uploading both medium and large sets is safest.

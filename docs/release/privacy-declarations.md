@@ -165,6 +165,7 @@ and states:
 
 - **The second-device link:** device to device on the LAN or AWDL, never reaching the developer or a partner. It doesn't meet the definition.
 - **Crash reports:** Apple's opt-in "Share with App Developers" is Apple's collection ("you are not responsible for disclosing data collected by Apple").
+- **Apple Watch / HealthKit:** the watch app runs an `HKWorkoutSession` (golf) only so it keeps sensing with the screen off. It requests permission to *share* the workout type (required to start a session), never saves a workout and never reads Health data. Wrist-swing timings go watch → phone over WatchConnectivity and stay on the phone. Nothing leaves the user's devices, so the label stays **Data Not Collected**. App Review guideline 5.1.3 (Health) still applies: say in the review notes and privacy policy exactly why HealthKit is used (both drafts below do).
 
 **Privacy manifest (verify).** Since 2024, apps and SDKs using "required reason" APIs need a `PrivacyInfo.xcprivacy`.
 
@@ -199,6 +200,10 @@ PERMISSIONS
 - Microphone: detects the impact sound on-device; audio is only kept inside saved clips.
 - Photos (add only): asked the first time you tap Save to Photos.
 - Local Network: only asked if you use the optional second-camera feature (Settings > Second camera), which links two devices running SimpleSwing directly over Wi-Fi. Testing it needs two iOS devices: on device B choose Settings > Use this phone as the camera; on device A tap "+ Cam" on the Capture screen, pick device B and type the 6-digit code it shows.
+
+APPLE WATCH (optional)
+- Install the watch app, wear the watch, open SimpleSwing on it. Tap SAVE on the watch to save from the phone; the watch taps your wrist when the clip is saved.
+- Settings > Watch > Sense swings: the watch starts a golf workout so it can read its motion sensor with the screen off, and recognises an arm swing. HealthKit is used only to run that workout session; no workout is saved and no Health data is read.
 
 There are no in-app purchases, ads, accounts or analytics in this version.
 ```

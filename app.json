@@ -75,7 +75,8 @@
         }
       ],
       "./plugins/with-release-signing",
-      "./plugins/with-android-policy"
+      "./plugins/with-android-policy",
+      "@bacons/apple-targets"
     ],
     "experiments": {
       "typedRoutes": true,

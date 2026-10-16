@@ -17,6 +17,6 @@ Pod::Spec.new do |s|
     'DEFINES_MODULE' => 'YES',
   }
 
-  s.frameworks = 'AVFoundation', 'AVKit', 'AudioToolbox', 'CoreMedia', 'CoreVideo', 'Network'
+  s.frameworks = 'AVFoundation', 'AVKit', 'AudioToolbox', 'CoreMedia', 'CoreVideo', 'Network', 'WatchConnectivity'
   s.source_files = "**/*.{h,m,mm,swift,hpp,cpp}"
 end

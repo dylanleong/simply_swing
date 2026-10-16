@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged with the keys Xcode generates (GENERATE_INFOPLIST_FILE). WKCompanionAppBundleIdentifier
+	     comes from the INFOPLIST_KEY_WKCompanionAppBundleIdentifier build setting the plugin writes. -->
+	<key>WKApplication</key>
+	<true/>
+	<!-- Needs the phone: it's a remote and a sensor for the iPhone's camera. -->
+	<key>WKRunsIndependentlyOfCompanionApp</key>
+	<false/>
+	<!-- The golf workout session is what keeps sensing running with the screen off. -->
+	<key>WKBackgroundModes</key>
+	<array>
+		<string>workout-processing</string>
+	</array>
+	<key>NSHealthShareUsageDescription</key>
+	<string>SimpleSwing runs a golf workout on your watch so it can sense your swings with the screen off. Nothing is saved to Health.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>SimpleSwing runs a golf workout on your watch so it can sense your swings with the screen off. Nothing is saved to Health.</string>
+</dict>
+</plist>

@@ -9,6 +9,10 @@ protocol CaptureEngineListener: AnyObject {
   func engineMotion(level: Double, threshold: Double)
   func engineExposure(shutterSec: Double, iso: Double?)
   func engineThermalDowngrade(from: Int, to: Int)
+  /// Watch reachable / wrist swing sensing active (auto mode, heartbeats arriving).
+  func engineWatchStatus(connected: Bool, sensing: Bool)
+  /// A wrist swing from the watch, for the Levels panel.
+  func engineWristSwing(peakDps: Int, tempo: WristTempo?)
   /// Two-phone link status (see PeerLink).
   func enginePeerStatus(_ status: PeerLink.Status)
   func enginePeersFound(_ peers: [PeerLink.PeerInfo])
@@ -25,7 +29,11 @@ protocol CaptureEngineListener: AnyObject {
  is finished, ClipExporter stitches and trims the clip. The same video frames feed the golfer-box
  MotionGate (no extra camera stream needed on iOS) and the same audio feeds the ImpactDetector.
 
- Threads: everything except `trigger`, the `state` getter and the published flags runs on `queue`.
+ Apple Watch (WatchBridge): tap-to-save, and in auto mode wrist swings that TriggerFusion matches
+ with impact sounds, so only the golfer's own shots are saved.
+
+ Threads: everything except `trigger`, the `state` getter and the published flags runs on `queue`
+ (WatchBridge calls back on it too, so TriggerFusion needs no lock).
  */
 final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
   static let shared = CaptureEngine()
@@ -85,6 +93,26 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   private var muteImpactUntil = -Double.infinity
   private var cleanedLeftovers = false
 
+  // MARK: Watch (queue, except `tempos` which is thread-safe)
+
+  private lazy var watch = WatchBridge(
+    queue: queue,
+    currentState: { [weak self] in self?.state ?? .idle },
+    onTrigger: { [weak self] in self?.trigger(.watch) ?? false },
+    onWristSwing: { [weak self] ageMs, oneWayMs, peakDps, tempo in
+      self?.onWristSwing(ageMs: ageMs, oneWayMs: oneWayMs, peakDps: peakDps, tempo: tempo)
+    },
+    onStatus: { [weak self] connected, sensing in
+      self?.listener?.engineWatchStatus(connected: connected, sensing: sensing)
+    }
+  )
+  /// Tempo of recent wrist swings, attached to the clips they trigger.
+  private let tempos = TempoLog()
+  /// Sound + wrist decisions while the watch is sensing.
+  private let fusion = TriggerFusion()
+  /// Level details of sounds waiting for a wrist verdict, keyed by sound time (µs).
+  private var pendingSounds: [Int64: (levelDb: Double, minLevelDb: Double)] = [:]
+
   /// `id` is the file stem, chosen at trigger time so the camera phone's angle can share it.
   /// `forPeer` clips were asked for by the main phone: they're streamed to it rather than kept.
   private final class PendingClip {
@@ -111,6 +139,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   private static let cooldown = 3.0
   /// Impact detection stays off this long after the chime ends (room echo, the phone's own speaker).
   private static let chimeMuteMargin = 0.4
+  /// How long a sound the wrist didn't claim keeps its level details for a late wrist message.
+  private static let lateWrist = 2.5
   private static let exportWatchdog = 3.0
   private static let standbyFps = 30
   private static let motionInterval = 1.0 / 15
@@ -161,6 +191,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       // e.g. expo-video switched to .playback for a replay on the Capture screen.
       self?.reapplyAudioSession(force: false)
     }
+    watch.start()
   }
 
   // MARK: - Public API (any thread)
@@ -178,6 +209,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       self.teardown()
       self.config = nil
       self.locked { self._config = nil }
+      self.watch.setActive(false)
+      self.fusion.clear()
+      self.pendingSounds.removeAll()
     }
   }
 
@@ -285,6 +319,11 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       _autoTrigger = cfg.autoTrigger
       _impactTrigger = cfg.impactTrigger
     }
+    fusion.clear()
+    pendingSounds.removeAll()
+    fusion.savePracticeSwings = cfg.savePracticeSwings
+    watch.setMode(cfg.watchMode)
+    watch.setActive(peers.role != .camera)
 
     if !standby && Self.micAllowed { Self.applyAudioSession(force: true) }
     do {
@@ -490,6 +529,11 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   }
 
   private func onImpactCandidate(time: Double, levelDb: Double, marginDb: Double, loudEnough: Bool) {
+    // With the watch sensing, the wrist decides instead of the camera (see TriggerFusion).
+    if loudEnough && time >= muteImpactUntil && impactTrigger && wristDecides() {
+      onFusionSound(time: time, levelDb: levelDb, minLevelDb: detector?.minLevelDb ?? 0)
+      return
+    }
     // No verdict (not enough motion history yet) lets the sound through rather than losing a swing.
     let motion = loudEnough ? motionGate.evaluate(impact: time) : nil
     let reason: String?
@@ -513,6 +557,65 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       reason: reason ?? (accepted ? nil : "busy"),
       motion: motion
     )
+  }
+
+  // MARK: - Watch: wrist swings + sound (queue)
+
+  /// The watch is the swing evidence when it's in auto mode and its sensor heartbeats are arriving.
+  private func wristDecides() -> Bool {
+    config?.watchMode == WatchBridge.modeAuto && watch.isSensing
+  }
+
+  private func onFusionSound(time: Double, levelDb: Double, minLevelDb: Double) {
+    guard let atUs = PeerProtocol.micros(fromSeconds: time) else { return }
+    pendingSounds[atUs] = (levelDb, minLevelDb)
+    applyFusion(fusion.onSound(atUs: atUs, nowUs: nowUs()))
+  }
+
+  private func onWristSwing(ageMs: Int, oneWayMs: Int, peakDps: Int, tempo: WristTempo?) {
+    guard state != .idle else { return }
+    listener?.engineWristSwing(peakDps: peakDps, tempo: tempo)
+    // The swing peaked ageMs before the watch sent it, plus the radio hop to us. WatchBridge bounds
+    // ageMs (0...60 s) and oneWayMs (≤ 1 s), so this can't overflow.
+    let peakUs = nowUs() - Int64(ageMs + oneWayMs) * 1000
+    if let tempo { tempos.add(peakUs: peakUs, tempo: tempo) }
+    applyFusion(fusion.onWrist(atUs: peakUs, nowUs: nowUs()))
+  }
+
+  private func pollFusion() {
+    applyFusion(fusion.poll(nowUs: nowUs()))
+  }
+
+  private func applyFusion(_ decisions: [TriggerFusion.Decision]) {
+    for d in decisions {
+      let levels = pendingSounds.removeValue(forKey: d.atUs) ?? (0, 0)
+      let at = Double(d.atUs) / 1_000_000
+      switch d.kind {
+      case .impact:
+        let accepted = trigger(.impact, at: at)
+        listener?.engineHeardSound(
+          levelDb: levels.levelDb, minLevelDb: levels.minLevelDb, accepted: accepted,
+          reason: accepted ? nil : "busy", motion: nil
+        )
+      case .noWrist:
+        // Kept for a late wrist message; re-stash the levels in case it arrives, then forget them.
+        pendingSounds[d.atUs] = levels
+        queue.asyncAfter(deadline: .now() + Self.lateWrist) { self.pendingSounds.removeValue(forKey: d.atUs) }
+        listener?.engineHeardSound(
+          levelDb: levels.levelDb, minLevelDb: levels.minLevelDb, accepted: false, reason: "wrist", motion: nil
+        )
+      case .practice:
+        let accepted = trigger(.wrist, at: at)
+        NSLog("SwingCapture: practice swing at \(at): accepted=\(accepted)")
+      }
+    }
+    guard let deadline = fusion.nextDeadlineUs() else { return }
+    let delayMs = max(1, (deadline - nowUs()) / 1000)
+    queue.asyncAfter(deadline: .now() + .milliseconds(Int(min(delayMs, 10_000)))) { self.pollFusion() }
+  }
+
+  private func nowUs() -> Int64 {
+    PeerProtocol.micros(fromSeconds: now()) ?? 0
   }
 
   /// Upright 72x128 luma thumbnail from the landscape Y plane (rotated 90° clockwise, 2x2 averaged).
@@ -594,6 +697,11 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   }
 
   private func clipSaved(_ written: WrittenClip, clip: PendingClip) {
+    // The wrist swing that set this clip off (sound + wrist, or a practice swing) knows its tempo.
+    var tempo: WristTempo?
+    if clip.source == .impact || clip.source == .wrist, let anchorUs = PeerProtocol.micros(fromSeconds: clip.window.anchor) {
+      tempo = tempos.near(anchorUs)
+    }
     let info: [String: Any?] = [
       "id": clip.id,
       "uri": written.url.absoluteString,
@@ -603,10 +711,13 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       "impactOffsetMs": written.impactOffset.map { $0 * 1000 },
       "anchorOffsetMs": written.anchorOffset * 1000,
       "source": clip.source.rawValue,
+      "backswingMs": tempo?.backswingMs,
+      "downswingMs": tempo?.downswingMs,
     ]
     var sidecar = info
     sidecar["createdAt"] = Int64(Date().timeIntervalSince1970 * 1000)
     ClipExporter.writeSidecar(for: written.url, info: sidecar)
+    watch.broadcastSaved()
     listener?.engineClipReady(info)
     if clip.chime && peers.role != .camera {
       queue.async {
@@ -743,8 +854,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     announce(next, format: format)
   }
 
-  /// Tells JS and the paired phone (which shows it, and as a camera phone follows the main's standby).
+  /// Tells JS, the watch and the paired phone (which shows it, and as a camera phone follows the main's standby).
   private func announce(_ state: EngineState, format: [String: Any]?) {
+    watch.broadcastState(state)
     peers.onEngineState(state)
     listener?.engineStateChanged(state, format: format)
   }

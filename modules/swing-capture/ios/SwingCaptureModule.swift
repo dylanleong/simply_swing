@@ -179,6 +179,18 @@ public class SwingCaptureModule: Module, CaptureEngineListener {
     sendEvent("onThermalDowngrade", ["fromFps": from, "toFps": to])
   }
 
+  func engineWatchStatus(connected: Bool, sensing: Bool) {
+    sendEvent("onWatchStatus", ["connected": connected, "sensing": sensing])
+  }
+
+  func engineWristSwing(peakDps: Int, tempo: WristTempo?) {
+    sendEvent("onWristSwing", [
+      "peakDps": peakDps,
+      "backswingMs": tempo?.backswingMs,
+      "downswingMs": tempo?.downswingMs,
+    ])
+  }
+
   func enginePeerStatus(_ status: PeerLink.Status) {
     sendEvent("onPeerStatus", [
       "role": status.role.rawValue,

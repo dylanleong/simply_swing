@@ -136,11 +136,13 @@ export const HELP_TOPICS: HelpTopic[] = [
           'is filmed from both, and Save to Photos makes one side-by-side video.',
       },
       {
-        heading: 'Wear OS watch',
+        heading: 'Apple Watch or Wear OS watch',
         body:
-          'Open SimpleSwing on the watch. With Settings → Watch → Sense swings, only shots where your ' +
-          'wrist swung are saved (neighbours’ shots are ignored), each swing gets a tempo, and practice ' +
-          'swings can be saved too. Or choose Tap to save, to use the watch as a remote.',
+          'Wear the watch on your lead wrist and open SimpleSwing on it. With Settings → Watch → Sense ' +
+          'swings, only shots where your wrist swung are saved (neighbours’ shots are ignored), each swing ' +
+          'gets a tempo, and practice swings can be saved too. On Apple Watch this runs as a golf workout, ' +
+          'so it keeps sensing with the screen off; nothing is saved to Health. Or choose Tap to save, to ' +
+          'use the watch as a remote. The watch taps your wrist when a swing is saved.',
       },
       {
         heading: 'Volume buttons and Bluetooth remotes',

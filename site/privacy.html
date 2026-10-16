@@ -138,11 +138,12 @@
   </ul>
   <p>On iPhone and iPad you'll be asked for Local Network permission the first time. On Android the app uses the Internet permission only to open this local connection.</p>
 
-  <h2>Watch (optional, Wear OS)</h2>
+  <h2>Watch (optional, Apple Watch or Wear OS)</h2>
   <ul>
     <li><strong>As a remote:</strong> tapping the watch tells your phone to save the swing.</li>
     <li><strong>Sensing your swing:</strong> while your phone is on the Capture screen, the watch reads its motion sensor (gyroscope) to recognise a swing and time your backswing and downswing. This is worked out on the watch. Raw sensor readings never leave it.</li>
-    <li><strong>What's sent:</strong> the watch and phone exchange only short messages: "save" taps, the time and peak speed of each wrist swing, tempo timings, status and timing checks. They go through the Wearable Data Layer, Google's link between your paired phone and watch. Nothing is sent to the developer.</li>
+    <li><strong>What's sent:</strong> the watch and phone exchange only short messages: "save" taps, the time and peak speed of each wrist swing, tempo timings, status and timing checks. They go through the Wearable Data Layer, Google's link between your paired phone and watch, or Apple's WatchConnectivity on Apple Watch. Nothing is sent to the developer.</li>
+    <li><strong>Apple Watch and Health:</strong> on Apple Watch, sensing runs as a golf workout so it keeps working with the screen off. That's why the app asks for permission to save workouts to Health. It never actually saves a workout, and it never reads any Health data.</li>
     <li>SimpleSwing doesn't read or write Health Connect, Google Fit or any other health records, and it doesn't use your heart rate or location.</li>
   </ul>
 
