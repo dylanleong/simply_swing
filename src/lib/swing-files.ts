@@ -12,6 +12,9 @@
 export const SWING_FILE_EXTENSIONS = ['b.mp4.part', 'user.json', 'b.mp4', 'b.json', 'mp4', 'json', 'jpg'] as const;
 export type SwingFileExtension = (typeof SWING_FILE_EXTENSIONS)[number];
 
+/** Every other file first and the main clip last (it's what makes a swing show in the library). */
+export const DELETE_ORDER: readonly SwingFileExtension[] = [...SWING_FILE_EXTENSIONS.filter((e) => e !== 'mp4'), 'mp4'];
+
 /** Files untouched for this long aren't being written any more. */
 export const LEFTOVER_AGE_MS = 60_000;
 

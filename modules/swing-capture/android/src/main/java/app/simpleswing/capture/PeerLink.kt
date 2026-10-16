@@ -26,7 +26,7 @@ import java.net.Socket
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import org.json.JSONObject
 
@@ -95,9 +95,11 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
   @Volatile private var view = ""
   @Volatile private var connection: Connection? = null
   /** Camera role: connections that haven't sent a valid HELLO yet (capped, each has a reader thread). */
-  private val unpaired = AtomicInteger(0)
+  private val waiting: MutableSet<Connection> = ConcurrentHashMap.newKeySet()
   /** Camera role: after a wrong code, every HELLO is refused until then (elapsedRealtime ms). */
-  @Volatile private var pairingLockedUntilMs = 0L
+  private var pairingLockedUntilMs = 0L
+  /** Makes check-code-then-lock atomic, so parallel connections get one guess per lockout between them. */
+  private val pairingLock = Any()
   private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
   /** Camera role: this phone's pairing code, made once and kept. */
   private val pairCode: String by lazy {
@@ -225,6 +227,12 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
     }
   }
 
+  /** Camera role: we couldn't save clip [id] after all; the main phone tells the user straight away. */
+  fun rejectClip(id: String, reason: String) {
+    if (role != PeerRole.CAMERA) return
+    connection?.send { PeerMessage.Reject(id, reason) }
+  }
+
   /** Our engine changed state; the other phone shows it (and a camera phone follows the main's). */
   fun onEngineState(state: EngineState) {
     connection?.send { PeerMessage.State(state.jsName) }
@@ -239,6 +247,9 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
       sender.execute { c.close("stopped") }
     }
     connection = null
+    // Connections still waiting to pair would otherwise pair after we've stopped being a camera.
+    waiting.forEach { it.close("stopped") }
+    waiting.clear()
     target = null
     targetCode = null
     stopDiscovery()
@@ -319,8 +330,7 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
 
   /** Camera role: someone connected. They get nothing until their HELLO carries our code. */
   private fun accept(socket: Socket) {
-    if (unpaired.incrementAndGet() > MAX_UNPAIRED) {
-      unpaired.decrementAndGet()
+    if (waiting.size >= MAX_UNPAIRED) {
       runCatching { socket.close() }
       return
     }
@@ -328,17 +338,20 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
       socket.tcpNoDelay = true
       Connection(socket, paired = false)
     } catch (e: IOException) {
-      unpaired.decrementAndGet()
       runCatching { socket.close() }
       return
     }
+    waiting.add(c)
     c.start()
     handler.postDelayed({ if (!c.paired) c.close("no hello") }, PAIRING_TIMEOUT_MS)
   }
 
   /** Camera role: [c] proved it knows the code. The newest paired main phone wins (a reconnect). */
   private fun promote(c: Connection) = handler.post {
-    if (role != PeerRole.CAMERA || c.isClosed) return@post
+    if (role != PeerRole.CAMERA || c.isClosed) {
+      c.close("not a camera any more")
+      return@post
+    }
     connection?.close("replaced")
     connection = c
     c.send { PeerMessage.Hello(PeerProtocol.VERSION, role.jsName, deviceName(), "android", host.fps(), view) }
@@ -493,7 +506,7 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
   private fun receive(c: Connection, m: PeerMessage) {
     when (m) {
       is PeerMessage.Clip -> {
-        c.incoming?.abort()
+        c.incoming?.let { dropIncoming(it) }
         c.incoming = null
         // Only clips we asked for, of a believable size; anything else is read and thrown away.
         if (!PeerProtocol.isValidClipId(m.id) || !expectedClips.containsKey(m.id)) {
@@ -520,7 +533,7 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
         val clip = c.incoming ?: return
         c.incoming = null
         if (clip.meta.id != m.id) {
-          clip.abort()
+          dropIncoming(clip)
           return
         }
         expectedClips.remove(m.id)
@@ -528,6 +541,14 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
       }
       else -> Unit
     }
+  }
+
+  /** A transfer cut short by a muddled stream: tell the user rather than wait 60 s for nothing. */
+  private fun dropIncoming(clip: Incoming) {
+    clip.abort()
+    expectedClips.remove(clip.meta.id)
+    triggerSyncMs.remove(clip.meta.id)
+    host.onError("E_PEER_CLIP", "The second camera's clip didn't arrive in full.")
   }
 
   /** A clip arriving from the camera phone, written to `<id>.b.mp4.part` until complete. */
@@ -596,10 +617,10 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
     @Volatile var peerSyncUs: Long? = null
     /** Reader thread only. */
     var incoming: Incoming? = null
-    @Volatile private var closed = false
+    private val closed = AtomicBoolean(false)
     @Volatile var paired = paired
       private set
-    val isClosed get() = closed
+    val isClosed get() = closed.get()
     val remote: String? get() = socket.remoteSocketAddress?.toString()
 
     fun start() {
@@ -608,7 +629,7 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
 
     /** Queues a frame; [build] runs just before writing so timestamps in it are fresh. */
     fun send(build: () -> PeerMessage) {
-      if (closed) return
+      if (isClosed) return
       sender.execute {
         try {
           write(build())
@@ -620,21 +641,20 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
 
     /** Sender thread only. */
     fun write(m: PeerMessage) {
-      if (closed) throw IOException("closed")
+      if (isClosed) throw IOException("closed")
       PeerProtocol.write(out, m)
     }
 
     fun close(reason: String) {
-      if (closed) return
-      closed = true
+      if (!closed.compareAndSet(false, true)) return
       runCatching { socket.close() }
-      if (!paired) unpaired.decrementAndGet()
+      waiting.remove(this)
       onClosed(this, reason)
     }
 
     private fun readLoop() {
       try {
-        while (!closed) {
+        while (!isClosed) {
           val m = PeerProtocol.read(input) ?: break
           val now = host.nowUs()
           lastHeardMs = SystemClock.elapsedRealtime()
@@ -661,22 +681,24 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
         close("version ${m.version}")
         return
       }
-      val now = SystemClock.elapsedRealtime()
-      val refusal = when {
-        now < pairingLockedUntilMs -> "wait"
-        !codesMatch(m.code, pairCode) -> "code"
-        else -> null
+      val refusal = synchronized(pairingLock) {
+        val now = SystemClock.elapsedRealtime()
+        when {
+          now < pairingLockedUntilMs -> "wait"
+          !codesMatch(m.code, pairCode) -> "code".also { pairingLockedUntilMs = now + PAIRING_LOCKOUT_MS }
+          else -> null
+        }
       }
       if (refusal != null) {
-        if (refusal == "code") pairingLockedUntilMs = now + PAIRING_LOCKOUT_MS
         Log.w(TAG, "Refused pairing from $remote: $refusal")
         runCatching { write(PeerMessage.Reject("", refusal)) }
         close("pairing refused")
         return
       }
+      // Gone from the waiting set means stop() or the pairing timeout closed us meanwhile.
+      if (!waiting.remove(this)) return
       hello = m
       paired = true
-      unpaired.decrementAndGet()
       promote(this)
     }
 
@@ -685,6 +707,13 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
       when (m) {
         is PeerMessage.Hello -> {
           if (m.version != PeerProtocol.VERSION) {
+            // Retrying every second would only repeat the error until one phone is updated.
+            if (role == PeerRole.MAIN) {
+              handler.post {
+                target = null
+                targetCode = null
+              }
+            }
             host.onError("E_PEER_VERSION", "Update SimpleSwing on both phones to use them together.")
             close("version ${m.version}")
             return
@@ -766,7 +795,10 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
     private const val PREF_CODE = "pairCode"
     private const val TICK_MS = 1_000L
     private const val PAIRING_TIMEOUT_MS = 5_000L
-    /** One wrong code shuts pairing for this long: guessing a 6-digit code would take weeks. */
+    /**
+     * One wrong code shuts pairing for this long: one guess per 2 s means about 12 days on average
+     * to guess a 6-digit code (and only while camera mode stays on).
+     */
     private const val PAIRING_LOCKOUT_MS = 2_000L
     private const val MAX_UNPAIRED = 4
     /** How long the main phone waits for an angle it asked for. */

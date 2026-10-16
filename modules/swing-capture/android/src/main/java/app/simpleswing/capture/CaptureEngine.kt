@@ -134,6 +134,18 @@ class CaptureEngine private constructor(private val context: Context) {
   @Volatile private var format: CaptureFormat? = null
   private var fpsRange: Range<Int>? = null
   @Volatile private var previewHost: PreviewHost? = null
+  /**
+   * Every preview view on screen, oldest first, with its latest surface (camera thread). Two can
+   * exist at once: camera mode is pushed over the Capture tab, which stays mounted underneath. The
+   * newest is the live one; when it goes, the camera falls back to the one below.
+   */
+  private val hosts = ArrayList<Pair<PreviewHost, Pair<Surface, Size>?>>()
+  /**
+   * The view whose surface the running camera session draws into. It can differ from [previewHost]:
+   * leaving camera mode, Capture restarts the camera a moment before its own view is back, so the
+   * session opens on camera mode's closing view and must move once that view goes.
+   */
+  private var sessionHost: PreviewHost? = null
   /** The preview's current surface and its buffer size, whatever size it is right now. */
   private var previewSurface: Surface? = null
   private var previewSurfaceSize: Size? = null
@@ -286,19 +298,37 @@ class CaptureEngine private constructor(private val context: Context) {
   // ---- Preview host hooks (main thread) ----
 
   fun attachPreview(host: PreviewHost) = cameraHandler.post {
-    previewHost = host
-    format?.let { fmt -> mainHandler.post { host.setBufferSize(fmt.size) } }
+    hosts.removeAll { it.first === host }
+    hosts.add(host to null)
+    useNewestHost()
+    Log.d(TAG, "Preview view ${host.hashCode()} attached (${hosts.size} on screen)")
+    // A camera running into a view that's now covered moves to this one once its surface is ready.
+    if (sessionHost != null && sessionHost !== host) stopPipeline()
   }
 
   fun detachPreview(host: PreviewHost) = cameraHandler.post {
-    if (previewHost !== host) return@post
+    val wasLive = previewHost === host
+    hosts.removeAll { it.first === host }
+    Log.d(TAG, "Preview view ${host.hashCode()} detached live=$wasLive (${hosts.size} left)")
+    if (sessionHost === host) stopPipeline()
+    if (!wasLive) {
+      maybeOpen()
+      return@post
+    }
     stopPipeline()
-    previewHost = null
-    previewSurface = null
-    previewSurfaceSize = null
+    // Back to the view underneath (leaving camera mode returns to Capture), whose surface may have
+    // been recreated while it was covered.
+    useNewestHost()
+    Log.i(TAG, "Preview view closed; ${if (previewHost != null) "falling back to the one below" else "none left"}")
+    maybeOpen()
   }
 
   fun onPreviewSurface(host: PreviewHost, surface: Surface, size: Size) = cameraHandler.post {
+    val i = hosts.indexOfFirst { it.first === host }
+    if (i < 0) return@post
+    // Remembered even for a covered view, so it can take over when the one on top goes.
+    hosts[i] = host to (surface to size)
+    Log.d(TAG, "Preview view ${host.hashCode()} surface ${size.width}x${size.height} live=${previewHost === host}")
     if (previewHost !== host) return@post
     // Until setBufferSize lands, the surface may have the view's size; maybeOpen waits for a match.
     previewSurface = surface
@@ -310,14 +340,30 @@ class CaptureEngine private constructor(private val context: Context) {
   fun onPreviewSurfaceDestroyed(host: PreviewHost) {
     val done = CountDownLatch(1)
     cameraHandler.post {
+      val i = hosts.indexOfFirst { it.first === host }
+      if (i >= 0) hosts[i] = host to null
+      Log.d(TAG, "Preview view ${host.hashCode()} surface destroyed live=${previewHost === host}")
       if (previewHost === host) {
         stopPipeline()
         previewSurface = null
         previewSurfaceSize = null
+      } else if (sessionHost === host) {
+        // The camera was drawing into a covered view: move it to the live one.
+        stopPipeline()
+        maybeOpen()
       }
       done.countDown()
     }
     done.await(2, TimeUnit.SECONDS)
+  }
+
+  /** Camera thread: the newest view is the live preview, with whatever surface it last reported. */
+  private fun useNewestHost() {
+    val (host, surface) = hosts.lastOrNull() ?: (null to null)
+    previewHost = host
+    previewSurface = surface?.first
+    previewSurfaceSize = surface?.second
+    if (host != null) format?.let { fmt -> mainHandler.post { host.setBufferSize(fmt.size) } }
   }
 
   // ---- Camera thread ----
@@ -354,6 +400,7 @@ class CaptureEngine private constructor(private val context: Context) {
   }
 
   private fun maybeOpen() {
+    Log.d(TAG, "maybeOpen host=${previewHost?.hashCode()} surface=${previewSurface?.isValid} size=$previewSurfaceSize fmt=${format?.size} camera=${camera != null} opening=$opening")
     val fmt = format ?: return
     val surface = previewSurface?.takeIf { it.isValid && previewSurfaceSize == fmt.size } ?: return
     val cfg = config ?: return
@@ -371,6 +418,7 @@ class CaptureEngine private constructor(private val context: Context) {
       audioRing.clear()
       if (standby) {
         opening = true
+        sessionHost = previewHost
         cameraManager.openCamera(fmt.cameraId, deviceCallback(gen, surface), cameraHandler)
         return
       }
@@ -403,6 +451,7 @@ class CaptureEngine private constructor(private val context: Context) {
       audio = AudioPipeline(clock, audioRing::add, { audioFormat = it }, ::onPipelineError, detector::process)
         .also { it.start() }
       opening = true
+      sessionHost = previewHost
       cameraManager.openCamera(fmt.cameraId, deviceCallback(gen, surface), cameraHandler)
     } catch (e: Exception) {
       fail(e)
@@ -578,10 +627,14 @@ class CaptureEngine private constructor(private val context: Context) {
 
   private fun stopPipeline() {
     generation++
+    sessionHost = null
     motionGeneration = -1
     // A swing whose post-roll hasn't finished (the golfer tapped away, standby, the heat downgrade)
     // is saved with what was recorded so far rather than lost with the buffer.
     val flushed = synchronized(triggerLock) {
+      // IDLE first: tearing down takes up to a second (the audio thread joins), and a trigger
+      // accepted meanwhile would be left pending into the next pipeline.
+      setState(EngineState.IDLE)
       val p = pending
       pending = null
       if (p != null && !p.claimed) {
@@ -716,7 +769,12 @@ class CaptureEngine private constructor(private val context: Context) {
       takeFrames(p)
     }
     try {
-      if (frames != null) save(frames) else listener?.onError("E_EXPORT", "Couldn't save that swing: no video was recorded.")
+      if (frames != null) {
+        save(frames)
+      } else {
+        if (p.forPeer) peers.rejectClip(p.id, "export")
+        listener?.onError("E_EXPORT", "Couldn't save that swing: no video was recorded.")
+      }
     } finally {
       synchronized(triggerLock) {
         if (pending === p) {
@@ -771,6 +829,8 @@ class CaptureEngine private constructor(private val context: Context) {
       listener?.onClipReady(info)
     } catch (e: Exception) {
       Log.e(TAG, "Export failed", e)
+      // The main phone is waiting for this angle: say so now rather than let it time out silently.
+      if (p.forPeer) peers.rejectClip(p.id, (e as? CaptureException)?.code ?: "export")
       listener?.onError((e as? CaptureException)?.code ?: "E_EXPORT", e.message ?: e.toString())
     }
   }
@@ -778,7 +838,8 @@ class CaptureEngine private constructor(private val context: Context) {
   /** The phone's own speaker is right next to its mic: mute the impact detector while it chimes. */
   private fun playChime() {
     // The touch mute covers TOUCH_MUTE_US from this instant, comfortably longer than the chime.
-    lastTouchUs = clock.nowUs() + chime.durationUs + CHIME_MUTE_EXTRA_US - TOUCH_MUTE_US
+    // Never shortens a real touch mute that is still running.
+    lastTouchUs = maxOf(lastTouchUs, clock.nowUs() + chime.durationUs + CHIME_MUTE_EXTRA_US - TOUCH_MUTE_US)
     chime.play()
   }
 
@@ -800,6 +861,7 @@ class CaptureEngine private constructor(private val context: Context) {
       if (state == EngineState.TRIGGERED) setState(EngineState.ARMED)
     }
     Log.w(TAG, "Clip window never completed (end=${clip.window.endUs}, now=${clock.nowUs()})")
+    if (clip.forPeer) peers.rejectClip(clip.id, "timeout")
     listener?.onError("E_EXPORT_TIMEOUT", "Couldn't save that swing — video stopped arriving. Ready again.")
   }
 

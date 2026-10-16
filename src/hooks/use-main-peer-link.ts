@@ -30,10 +30,10 @@ export function useMainPeerLink() {
   const [codeRequest, setCodeRequest] = useState<CodeRequest | null>(null);
   const statusRef = useRef(status);
   /** The last connection attempt, so a wrong code can ask again and a right one is remembered. */
-  const attemptRef = useRef<(CodeRequest & { code: string }) | null>(null);
+  const attemptRef = useRef<(CodeRequest & { code: string; auto: boolean }) | null>(null);
 
-  const dial = useCallback((target: string, name: string | null, code: string) => {
-    attemptRef.current = { target, name, code };
+  const dial = useCallback((target: string, name: string | null, code: string, auto = false) => {
+    attemptRef.current = { target, name, code, auto };
     SwingCapture.connectPeer(target, code);
   }, []);
 
@@ -55,10 +55,14 @@ export function useMainPeerLink() {
         setConnecting(null);
         setConnectError(e.message);
         if (e.code === 'E_PEER_CODE') {
-          // The saved code is wrong (or was never right): forget it and ask again.
-          save({ lastCameraCode: null });
           const attempt = attemptRef.current;
-          if (attempt) setCodeRequest({ target: attempt.target, name: attempt.name });
+          // Forget the saved code only if it's the one that failed (not another camera's).
+          if (attempt && attempt.code === loadCaptureSettings().lastCameraCode) save({ lastCameraCode: null });
+          if (attempt) {
+            setCodeRequest({ target: attempt.target, name: attempt.name });
+            // The user typed nothing: the camera phone's code changed (reinstalled, say).
+            if (attempt.auto) setConnectError(`The code for ${attempt.name ?? attempt.target} has changed. Type the code it shows now.`);
+          }
         }
       }),
       SwingCapture.addListener('onPeersFound', ({ peers: found }) => {
@@ -66,7 +70,7 @@ export function useMainPeerLink() {
         const { lastCameraName, lastCameraCode } = loadCaptureSettings();
         const known = lastCameraName ? found.find((p) => p.name === lastCameraName) : undefined;
         if (known && isPairingCode(lastCameraCode) && statusRef.current?.state !== 'connected') {
-          dial(known.id, known.name, lastCameraCode);
+          dial(known.id, known.name, lastCameraCode, true);
         }
       }),
     ];
@@ -111,9 +115,12 @@ export function useMainPeerLink() {
 
   const cancelCode = () => setCodeRequest(null);
 
-  /** Off, and forget the last camera and its code so it isn't reconnected automatically. */
+  /**
+   * Off. The last camera and its code are kept, so turning the second camera on again (next session,
+   * say) reconnects without retyping the code; a wrong code is forgotten when the camera refuses it.
+   */
   const turnOff = () => {
-    save({ secondCamera: false, lastCameraName: null, lastCameraCode: null });
+    save({ secondCamera: false });
     attemptRef.current = null;
     setEnabled(false);
     setPeers([]);

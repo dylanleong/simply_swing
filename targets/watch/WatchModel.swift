@@ -33,6 +33,9 @@ final class WatchModel: ObservableObject {
     guard !launched else { return }
     launched = true
     sensor.send = { [link] message in link.send(message) }
+    sensor.sendHeartbeat = { [link] in
+      link.request(WatchProtocol.message(WatchProtocol.heartbeat)) { [weak self] reply in self?.heartbeatAnswered(reply) }
+    }
     sensor.onSwing = { [weak self] swing in
       self?.lastSwingDps = Int(swing.peakDps)
       self?.lastTempo = WatchProtocol.tempoRatio(backswingNs: swing.backswingNs, downswingNs: swing.downswingNs)
@@ -109,6 +112,18 @@ final class WatchModel: ObservableObject {
     default:
       break // ping: already answered by PhoneLink, and counted above as hearing from the phone.
     }
+  }
+
+  /**
+   The phone's answer to a heartbeat, ["t": "state", "state", "mode"] (an older phone answers [:]).
+   Any answer counts as hearing from the phone, which keeps the 2 min silence rule from stopping a
+   workout the phone's own messages can't reach in the background.
+   */
+  private func heartbeatAnswered(_ reply: [String: Any]) {
+    handle(reply)
+    guard let newMode = WatchProtocol.mode(in: reply), newMode != mode else { return }
+    mode = newMode
+    if newMode != WatchProtocol.modeAuto { sensor.stop(reason: "Watch mode \(newMode)") }
   }
 
   /**

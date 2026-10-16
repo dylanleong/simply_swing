@@ -1,6 +1,6 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
-import { isSwingId, planSwingDir, SWING_FILE_EXTENSIONS, type SwingFileSet } from './swing-files';
+import { DELETE_ORDER, isSwingId, planSwingDir, type SwingFileSet } from './swing-files';
 import { parseSwing, swingsToPrune, type AngleFile, type Swing } from './swing-library';
 import { parseNotes, type SwingNotes } from './swing-notes';
 
@@ -148,19 +148,17 @@ export function deleteSwings(ids: readonly string[]): boolean {
   for (const id of ids) {
     if (!isSwingId(id)) continue;
     // The clip last: if a delete fails part way, the swing is still listed and can be deleted again.
-    for (const ext of [...SWING_FILE_EXTENSIONS].reverse()) {
+    for (const ext of DELETE_ORDER) {
       if (!deleteFile(new File(dir, `${id}.${ext}`))) ok = false;
     }
   }
   return ok;
 }
 
-/** Applies the auto-delete setting. Returns how many swings were removed. Never throws. */
-export function pruneOldSwings(days: number): number {
-  if (days <= 0) return 0;
-  const ids = swingsToPrune(listSwings(), days);
-  deleteSwings(ids);
-  return ids.length;
+/** Applies the auto-delete setting. False if some files couldn't be deleted. Never throws. */
+export function pruneOldSwings(days: number): boolean {
+  if (days <= 0) return true;
+  return deleteSwings(swingsToPrune(listSwings(), days));
 }
 
 let prunedThisLaunch = false;

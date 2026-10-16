@@ -112,7 +112,7 @@ final class PeerLink {
   private static let helloTimeout = 5.0
   private static let codeLockout = 2.0
   private static let triggerExpiry = 60.0
-  /// Camera role: unauthenticated connections kept at once; the oldest is dropped beyond this.
+  /// Camera role: unauthenticated connections kept at once; new ones are refused beyond this.
   private static let maxUnauthenticated = 4
   private static let pairCodeKey = "simpleswing.pairCode"
   /// kDNSServiceErr_PolicyDenied (dns_sd.h): Bonjour blocked by the Local Network permission.
@@ -249,6 +249,15 @@ final class PeerLink {
     }
   }
 
+  /// Camera role: we couldn't save clip `id` after all (export failed, timed out, no frames); the main
+  /// phone tells the user straight away rather than wait for nothing.
+  func rejectClip(id: String, reason: String) {
+    queue.async { [self] in
+      guard role == .camera, PeerProtocol.isValidClipId(id) else { return }
+      connection?.send(.reject(id: id, reason: reason))
+    }
+  }
+
   /// Our engine changed state; the other phone shows it (and a camera phone follows the main's).
   func onEngineState(_ state: EngineState) {
     queue.async { [self] in
@@ -283,6 +292,7 @@ final class PeerLink {
       connection = nil
       c.send(.bye) { _ in c.close("stopped") }
     }
+    // Connections still waiting to pair would otherwise pair after we've stopped being a camera.
     for c in unauthenticated { c.close("stopped") }
     unauthenticated.removeAll()
     connecting?.cancel()
@@ -391,7 +401,12 @@ final class PeerLink {
   /// Camera role: an incoming connection waits, unauthenticated, for the main phone's HELLO. It
   /// doesn't touch the live link, and is closed if no valid HELLO arrives within `helloTimeout`.
   private func accept(_ nw: NWConnection) {
-    if unauthenticated.count >= Self.maxUnauthenticated { unauthenticated.first?.close("too many connections") }
+    // Refuse the newcomer rather than evict one already waiting: a flood can't push the main phone out.
+    guard unauthenticated.count < Self.maxUnauthenticated else {
+      NSLog("SwingPeerLink: \(Self.maxUnauthenticated) connections already waiting to pair; refused another")
+      nw.cancel()
+      return
+    }
     let c = Connection(nw, link: self)
     unauthenticated.append(c)
     c.start(started: false)
@@ -409,6 +424,11 @@ final class PeerLink {
       c.refused = true
       c.send(.reject(id: "", reason: reason)) { _ in c.close("refused: \(reason)") }
     }
+    // stop() closed us, or the role changed, while this HELLO was on its way: never pair now.
+    guard role == .camera, unauthenticated.contains(where: { $0 === c }) else {
+      c.close("not a camera any more")
+      return
+    }
     // Same order as PeerLink.kt: role, version, lockout, code.
     guard peerRole == PeerRole.main.rawValue else {
       c.close("hello from a \(peerRole), not a main phone")
@@ -421,6 +441,8 @@ final class PeerLink {
       c.send(helloMessage()) { _ in c.close("version \(version)") }
       return
     }
+    // Lockout check, code compare and lockout set happen together on `queue`, which every
+    // connection shares: parallel connections get one guess per lockout between them.
     if now < lockoutUntil {
       refuse("wait")
       return
@@ -568,9 +590,13 @@ final class PeerLink {
 
   fileprivate func handle(_ c: Connection, _ m: PeerMessage, receivedUs: Int64) {
     if !c.authenticated {
-      // Camera role, unauthenticated: only a HELLO counts; everything else is ignored.
-      if !c.refused, case let .hello(version, peerRole, name, _, _, view, code) = m {
+      // Camera role, unauthenticated: the first message must be the main phone's HELLO; anything else
+      // hangs up. A refused connection is closing already.
+      guard !c.refused else { return }
+      if case let .hello(version, peerRole, name, _, _, view, code) = m {
         authenticate(c, version: version, role: peerRole, name: name, view: view, code: code)
+      } else {
+        c.close("message before HELLO")
       }
       return
     }
@@ -579,6 +605,12 @@ final class PeerLink {
     switch m {
     case let .hello(version, _, name, _, _, view, _):
       guard version == PeerProtocol.version else {
+        if role == .main {
+          // Retrying every second would only repeat the error until one phone is updated.
+          target = nil
+          targetCode = ""
+          reportConnectFailure = false
+        }
         host?.peerError(code: "E_PEER_VERSION", message: "Update SimpleSwing on both phones to use them together.")
         c.close("version \(version)")
         return
@@ -647,8 +679,10 @@ final class PeerLink {
   private func receive(_ c: Connection, _ m: PeerMessage) {
     switch m {
     case let .clip(id, fps, durationMs, anchorOffsetMs, size):
-      c.incoming?.abort()
-      c.incoming = nil
+      if let cut = c.incoming {
+        c.incoming = nil
+        dropIncoming(cut)
+      }
       // Only clips we asked for; DATA and DONE that follow an ignored CLIP are dropped (no incoming).
       guard PeerProtocol.isValidClipId(id), sentTriggers[id] != nil else {
         NSLog("SwingPeerLink: ignoring clip \(id.prefix(64)): not one we triggered")
@@ -674,9 +708,7 @@ final class PeerLink {
       guard let clip = c.incoming else { return }
       c.incoming = nil
       guard id == clip.id else {
-        clip.abort()
-        sentTriggers[clip.id] = nil
-        host?.peerError(code: "E_PEER_CLIP", message: "The second camera's clip didn't arrive in full.")
+        dropIncoming(clip)
         return
       }
       switch clip.finish(hello: c.hello, syncMs: sentTriggers.removeValue(forKey: id)?.syncMs) {
@@ -690,6 +722,14 @@ final class PeerLink {
     default:
       break
     }
+  }
+
+  /// A transfer cut short by a muddled stream (a new CLIP mid-transfer, DONE for another id): tell
+  /// the user now rather than wait for nothing, and stop expecting that clip.
+  private func dropIncoming(_ clip: Incoming) {
+    clip.abort()
+    sentTriggers[clip.id] = nil
+    host?.peerError(code: "E_PEER_CLIP", message: "The second camera's clip didn't arrive in full.")
   }
 
   /// A clip arriving from the camera phone, written to `<id>.b.mp4.part` until complete.

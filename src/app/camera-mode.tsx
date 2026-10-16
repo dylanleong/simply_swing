@@ -2,7 +2,7 @@ import { useEvent } from 'expo';
 import { useKeepAwake } from 'expo-keep-awake';
 import { router, Stack, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { AppState, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { PermissionGate } from '@/components/permission-gate';
@@ -112,6 +112,19 @@ function CameraPhone() {
       };
     }, [wake])
   );
+
+  // Never leave the phone dimmed (or a stale saved brightness, on iOS) when the app is left.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        wake();
+      } else {
+        if (dimTimer.current) clearTimeout(dimTimer.current);
+        restoreScreen();
+      }
+    });
+    return () => sub.remove();
+  }, [wake]);
 
   useEffect(() => {
     const subs = [

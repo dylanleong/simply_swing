@@ -62,6 +62,21 @@ final class PhoneLink: NSObject, WCSessionDelegate {
     }
   }
 
+  /**
+   Sends now, if the phone can be reached, and hands its answer to onReply (main queue). Used for
+   heartbeats: the phone's own messages may not reach us while a workout runs us in the background,
+   but its answer to ours does. No answer (unreachable, timed out) is just logged; the next one may
+   get through. Callable from any thread.
+   */
+  func request(_ message: [String: Any], onReply: @escaping ([String: Any]) -> Void) {
+    guard let session, isReachable else { return }
+    session.sendMessage(message, replyHandler: { reply in
+      DispatchQueue.main.async { onReply(reply) }
+    }) { error in
+      Self.log.info("Send \(WatchProtocol.type(of: message) ?? "?", privacy: .public) got no answer: \(error.localizedDescription, privacy: .public)")
+    }
+  }
+
   /// Calls done (main queue) once the session is activated with nothing left to deliver, or after
   /// idleTimeout. For WKWatchConnectivityRefreshBackgroundTask.
   func whenIdle(_ done: @escaping () -> Void) {

@@ -10,7 +10,8 @@ import WatchConnectivity
    watch → phone  hello                ask for current state (+ we resend the config)
    watch → phone  trigger              tap-to-save
    watch → phone  swing                ageMs, peakDps[, backswingMs, downswingMs]: wrist swing that peaked ageMs ago
-   watch → phone  heartbeat            sensing is running (every ~5 s)
+   watch → phone  heartbeat            sensing is running (every ~5 s); asks for a reply, which is
+                                       ["t": "state", "state", "mode"] (see the reply-handler delegate)
    watch → phone  pong                 ns: echo of a ping's ns (clock round trip)
    phone → watch  state                state: engine state name
    phone → watch  saved                clip written
@@ -33,6 +34,8 @@ final class WatchBridge: NSObject, WCSessionDelegate {
   static let modes: Set<String> = [modeAuto, modeTap, modeOff]
 
   private static let tickInterval = 1.0
+  /// Ping every this many ticks (5 s, WearBridge's TICK_MS); status is still checked every tick.
+  private static let pingEveryTicks = 5
   private static let connectedTimeout = 15.0
   private static let sensingTimeout = 15.0
   private static let defaultRttMs = 80
@@ -42,10 +45,13 @@ final class WatchBridge: NSObject, WCSessionDelegate {
   private static let pingKey = "ns"
 
   private let queue: DispatchQueue
+  /// The capture clock, µs (any thread): when a swing message arrived, before the hop to `queue`.
+  private let nowUs: () -> Int64
   private let currentState: () -> EngineState
   private let onTrigger: () -> Bool
-  /// Wrist swing that peaked `ageMs` + `oneWayMs` before now, with its tempo if measured.
-  private let onWristSwing: (_ ageMs: Int, _ oneWayMs: Int, _ peakDps: Int, _ tempo: WristTempo?) -> Void
+  /// Wrist swing that peaked `ageMs` + `oneWayMs` before `receivedUs` (capture clock), with its tempo
+  /// if measured.
+  private let onWristSwing: (_ receivedUs: Int64, _ ageMs: Int, _ oneWayMs: Int, _ peakDps: Int, _ tempo: WristTempo?) -> Void
   private let onStatus: (_ connected: Bool, _ sensing: Bool) -> Void
 
   // Capture queue only.
@@ -57,6 +63,7 @@ final class WatchBridge: NSObject, WCSessionDelegate {
   private var recentRttMs: [Int] = []
   private var active = false
   private var timer: DispatchSourceTimer?
+  private var ticks = 0
   private var lastStatus: Status?
   private var lastContext: [String: String]?
 
@@ -67,12 +74,14 @@ final class WatchBridge: NSObject, WCSessionDelegate {
 
   init(
     queue: DispatchQueue,
+    nowUs: @escaping () -> Int64,
     currentState: @escaping () -> EngineState,
     onTrigger: @escaping () -> Bool,
-    onWristSwing: @escaping (_ ageMs: Int, _ oneWayMs: Int, _ peakDps: Int, _ tempo: WristTempo?) -> Void,
+    onWristSwing: @escaping (_ receivedUs: Int64, _ ageMs: Int, _ oneWayMs: Int, _ peakDps: Int, _ tempo: WristTempo?) -> Void,
     onStatus: @escaping (_ connected: Bool, _ sensing: Bool) -> Void
   ) {
     self.queue = queue
+    self.nowUs = nowUs
     self.currentState = currentState
     self.onTrigger = onTrigger
     self.onWristSwing = onWristSwing
@@ -111,6 +120,7 @@ final class WatchBridge: NSObject, WCSessionDelegate {
       self.timer?.cancel()
       self.timer = nil
       guard on else { return }
+      self.ticks = 0
       let timer = DispatchSource.makeTimerSource(queue: self.queue)
       timer.schedule(deadline: .now(), repeating: Self.tickInterval)
       timer.setEventHandler { [weak self] in self?.tick() }
@@ -174,20 +184,35 @@ final class WatchBridge: NSObject, WCSessionDelegate {
   }
 
   func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-    let receivedNs = Self.monotonicNs()
-    queue.async { self.handle(message, receivedNs: receivedNs) }
+    let received = arrival(of: message)
+    queue.async { self.handle(message, receivedNs: received.ns, receivedUs: received.us) }
   }
 
-  /// The watch app sends without a reply handler; answer anyway if one ever asks, so it doesn't time out.
+  /// Heartbeats ask for a reply: our state and mode. While the watch runs a background workout our
+  /// own messages may not reach it (we send only when it's reachable), but this answer does, so the
+  /// watch keeps hearing from us. Anything else that asks gets [:] so it doesn't time out.
   func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
-    let receivedNs = Self.monotonicNs()
-    replyHandler([:])
-    queue.async { self.handle(message, receivedNs: receivedNs) }
+    let received = arrival(of: message)
+    queue.async {
+      self.handle(message, receivedNs: received.ns, receivedUs: received.us)
+      if message["t"] as? String == "heartbeat" {
+        replyHandler(["t": "state", "state": self.currentState().rawValue, "mode": self.mode])
+      } else {
+        replyHandler([:])
+      }
+    }
+  }
+
+  /// When a message arrived, taken on WatchConnectivity's queue: monotonic ns (for pongs), and the
+  /// capture clock for swings, whose peak time is reckoned back from it (a busy capture queue mustn't
+  /// make the swing look later than it was).
+  private func arrival(of message: [String: Any]) -> (ns: Int64, us: Int64) {
+    (Self.monotonicNs(), message["t"] as? String == "swing" ? nowUs() : 0)
   }
 
   // MARK: - Capture queue
 
-  private func handle(_ message: [String: Any], receivedNs: Int64) {
+  private func handle(_ message: [String: Any], receivedNs: Int64, receivedUs: Int64) {
     let now = Self.uptime()
     lastHeard = now
     switch message["t"] as? String {
@@ -213,7 +238,7 @@ final class WatchBridge: NSObject, WCSessionDelegate {
       if let swing = WristSwingMessage.parse(message),
          (0...Self.maxSwingAgeMs).contains(swing.ageMs),
          mode == Self.modeAuto {
-        onWristSwing(swing.ageMs, oneWayMs, swing.peakDps, swing.tempo)
+        onWristSwing(receivedUs, swing.ageMs, oneWayMs, swing.peakDps, swing.tempo)
       }
     default:
       break
@@ -222,7 +247,8 @@ final class WatchBridge: NSObject, WCSessionDelegate {
   }
 
   private func tick() {
-    send("ping", [Self.pingKey: Self.monotonicNs()])
+    if ticks % Self.pingEveryTicks == 0 { send("ping", [Self.pingKey: Self.monotonicNs()]) }
+    ticks += 1
     reportStatus()
   }
 

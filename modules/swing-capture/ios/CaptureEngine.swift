@@ -97,10 +97,11 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
   private lazy var watch = WatchBridge(
     queue: queue,
+    nowUs: { [weak self] in self?.nowUs() ?? 0 },
     currentState: { [weak self] in self?.state ?? .idle },
     onTrigger: { [weak self] in self?.trigger(.watch) ?? false },
-    onWristSwing: { [weak self] ageMs, oneWayMs, peakDps, tempo in
-      self?.onWristSwing(ageMs: ageMs, oneWayMs: oneWayMs, peakDps: peakDps, tempo: tempo)
+    onWristSwing: { [weak self] receivedUs, ageMs, oneWayMs, peakDps, tempo in
+      self?.onWristSwing(receivedUs: receivedUs, ageMs: ageMs, oneWayMs: oneWayMs, peakDps: peakDps, tempo: tempo)
     },
     onStatus: { [weak self] connected, sensing in
       self?.listener?.engineWatchStatus(connected: connected, sensing: sensing)
@@ -291,6 +292,13 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
   private func startPending(_ clip: PendingClip) {
     queue.async {
+      // Stopped between the trigger and here: no recorder to save it from, and it mustn't stay
+      // pending into the next pipeline.
+      guard self.recorder != nil else {
+        if self.state == .triggered { self.setState(.armed) }
+        if clip.forPeer { self.peers.rejectClip(id: clip.id, reason: "export") }
+        return
+      }
       self.pending = clip
       // Never leave the UI stuck on "Saving" if frames stop or a chunk fails to finish.
       let wait = max(0, clip.window.end - self.now()) + Self.exportWatchdog
@@ -458,7 +466,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       }
       guard let last = chunks.map(\.end).max(), last > clip.window.start else {
         r.release()
-        if !clip.forPeer {
+        if clip.forPeer {
+          self.peers.rejectClip(id: clip.id, reason: "export")
+        } else {
           self.listener?.engineError(code: "E_EXPORT", message: "Couldn't save that swing: recording stopped.")
         }
         return
@@ -475,10 +485,12 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   }
 
   private func teardown() {
+    // Idle first: stopRunning() can take a while, and a trigger accepted meanwhile would be left
+    // pending into the next pipeline.
+    setState(.idle)
     if session.isRunning { session.stopRunning() }
     stopRecorder()
     detector = nil
-    setState(.idle)
   }
 
   // MARK: - Sample buffers (queue)
@@ -572,12 +584,13 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     applyFusion(fusion.onSound(atUs: atUs, nowUs: nowUs()))
   }
 
-  private func onWristSwing(ageMs: Int, oneWayMs: Int, peakDps: Int, tempo: WristTempo?) {
+  private func onWristSwing(receivedUs: Int64, ageMs: Int, oneWayMs: Int, peakDps: Int, tempo: WristTempo?) {
     guard state != .idle else { return }
     listener?.engineWristSwing(peakDps: peakDps, tempo: tempo)
-    // The swing peaked ageMs before the watch sent it, plus the radio hop to us. WatchBridge bounds
-    // ageMs (0...60 s) and oneWayMs (≤ 1 s), so this can't overflow.
-    let peakUs = nowUs() - Int64(ageMs + oneWayMs) * 1000
+    // The swing peaked ageMs before the watch sent it, plus the radio hop to us, counted back from
+    // when the message arrived (not from now: the capture queue may have been busy). WatchBridge
+    // bounds ageMs (0...60 s) and oneWayMs (≤ 1 s), so this can't overflow.
+    let peakUs = receivedUs - Int64(ageMs + oneWayMs) * 1000
     if let tempo { tempos.add(peakUs: peakUs, tempo: tempo) }
     applyFusion(fusion.onWrist(atUs: peakUs, nowUs: nowUs()))
   }
@@ -683,8 +696,11 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
           self.clipSaved(written, clip: clip)
         }
       } catch is StorageFullException {
+        // The main phone is waiting for this angle: say so now rather than let it time out silently.
+        if clip.forPeer { self.peers.rejectClip(id: clip.id, reason: Storage.fullCode) }
         self.listener?.engineError(code: Storage.fullCode, message: Storage.fullMessage)
       } catch {
+        if clip.forPeer { self.peers.rejectClip(id: clip.id, reason: "export") }
         self.listener?.engineError(code: "E_EXPORT", message: error.localizedDescription)
       }
       self.queue.async {
@@ -721,8 +737,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     listener?.engineClipReady(info)
     if clip.chime && peers.role != .camera {
       queue.async {
-        // Mute first: the chime reaches the mic within milliseconds of play().
-        self.muteImpactUntil = self.now() + SavedChime.duration + Self.chimeMuteMargin
+        // Mute first: the chime reaches the mic within milliseconds of play(). Never shortens a mute
+        // that is still running.
+        self.muteImpactUntil = max(self.muteImpactUntil, self.now() + SavedChime.duration + Self.chimeMuteMargin)
         SavedChime.play()
       }
     }
@@ -732,6 +749,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     guard pending === clip, !clip.exporting else { return }
     pending = nil
     if state == .triggered { setState(.armed) }
+    if clip.forPeer { peers.rejectClip(id: clip.id, reason: "timeout") }
     listener?.engineError(code: "E_EXPORT_TIMEOUT", message: "Couldn't save that swing. Ready again.")
   }
 

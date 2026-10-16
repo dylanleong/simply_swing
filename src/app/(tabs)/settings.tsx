@@ -19,6 +19,7 @@ import {
 } from '@/lib/capture-settings';
 import { loadCaptureSettings, saveCaptureSettings } from '@/lib/capture-settings-store';
 import { formatBytes, pruneQuestion, swingsToPrune } from '@/lib/swing-library';
+import { alertDeleteFailed } from '@/lib/storage-alert';
 import { listSwings, pruneOldSwings } from '@/lib/swing-store';
 import SwingCapture from '../../../modules/swing-capture';
 
@@ -55,7 +56,7 @@ export default function SettingsScreen() {
     setSettings(next);
     saveCaptureSettings(next);
     if (patch.autoDeleteDays !== undefined) {
-      pruneOldSwings(next.autoDeleteDays);
+      if (!pruneOldSwings(next.autoDeleteDays)) alertDeleteFailed();
       refreshStorage();
     }
   };

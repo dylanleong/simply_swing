@@ -9,7 +9,8 @@ import Foundation
    watch → phone  trigger               tap-to-save
    watch → phone  swing                 ageMs, peakDps[, backswingMs, downswingMs]: a wrist swing that
                                         peaked ageMs before sending (watch clock), with its tempo
-   watch → phone  heartbeat             sensing is running (every 5 s)
+   watch → phone  heartbeat             sensing is running (every 5 s); sent with a reply handler, and
+                                        the phone answers ["t": state, state, mode]
    watch → phone  pong                  the ping echoed back
    phone → watch  state {state}         engine state jsName
    phone → watch  saved                 clip written

@@ -26,6 +26,9 @@ final class SwingSensor: NSObject, HKWorkoutSessionDelegate {
 
   /// Sends to the phone (PhoneLink.send; any thread).
   var send: (([String: Any]) -> Void)?
+  /// Sends a heartbeat the phone answers with its state (PhoneLink.request; any thread). The owner
+  /// handles the answer and passes it back through heardFromPhone.
+  var sendHeartbeat: (() -> Void)?
   /// Main queue: a swing was detected and sent.
   var onSwing: ((SwingDetector.Swing) -> Void)?
   /// Main queue: sensing started/stopped; screenOff = a workout keeps it going with the screen off.
@@ -38,7 +41,8 @@ final class SwingSensor: NSObject, HKWorkoutSessionDelegate {
 
   private var running = false
   private var starting = false
-  /// Bumped by stop(), so an authorization prompt answered after a stop doesn't start sensing.
+  /// Bumped by stop() and by a workout recovery, so an authorization prompt answered after either
+  /// doesn't start sensing (or a second workout).
   private var generation = 0
   private var session: HKWorkoutSession?
   private var detector: SwingDetector?
@@ -106,8 +110,24 @@ final class SwingSensor: NSObject, HKWorkoutSessionDelegate {
         return
       }
       self.queue.async {
-        guard keep, !self.running else {
+        guard keep else {
           recovered.end()
+          return
+        }
+        // Recovery and start() are exclusive: a start still waiting on authorization never begins.
+        self.starting = false
+        self.generation += 1
+        guard self.session !== recovered else { return }
+        if self.running {
+          if self.session == nil {
+            // Sensing on screen only: the recovered workout keeps it going with the screen off too.
+            recovered.delegate = self
+            self.session = recovered
+            self.notify()
+          } else {
+            // Already sensing under a workout of our own: never keep two.
+            recovered.end()
+          }
           return
         }
         recovered.delegate = self
@@ -140,6 +160,12 @@ final class SwingSensor: NSObject, HKWorkoutSessionDelegate {
   }
 
   private func begin(withWorkout: Bool) {
+    // A recovered workout may have got here first; never start a second one.
+    guard !running else { return }
+    if let stale = session {
+      session = nil
+      stale.end()
+    }
     if withWorkout {
       let configuration = HKWorkoutConfiguration()
       configuration.activityType = .golf
@@ -184,6 +210,9 @@ final class SwingSensor: NSObject, HKWorkoutSessionDelegate {
   // MARK: - Motion
 
   private func startMotion(screenOff: Bool) {
+    // Never two motion handlers or heartbeat timers, whoever got here first.
+    motion.stopDeviceMotionUpdates()
+    heartbeat?.cancel()
     detector = SwingDetector { [weak self] swing in self?.report(swing) }
     rules = SensingStopRules(now: ProcessInfo.processInfo.systemUptime)
     motion.deviceMotionUpdateInterval = Self.sampleInterval
@@ -237,7 +266,7 @@ final class SwingSensor: NSObject, HKWorkoutSessionDelegate {
   }
 
   private func tick() {
-    send?(WatchProtocol.message(WatchProtocol.heartbeat))
+    sendHeartbeat?()
     if let reason = rules.stopReason(now: ProcessInfo.processInfo.systemUptime) {
       Self.log.info("\(reason, privacy: .public); stopping")
       stopNow()

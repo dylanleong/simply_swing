@@ -1,4 +1,4 @@
-import { isSwingId, LEFTOVER_AGE_MS, planSwingDir } from '../swing-files';
+import { DELETE_ORDER, isSwingId, LEFTOVER_AGE_MS, planSwingDir, SWING_FILE_EXTENSIONS } from '../swing-files';
 
 const NOW = 1_800_000_000_000;
 const OLD = NOW - LEFTOVER_AGE_MS - 1;
@@ -71,5 +71,12 @@ describe('isSwingId', () => {
     expect(isSwingId('../capture-settings')).toBe(false);
     expect(isSwingId('swing_1/../../x')).toBe(false);
     expect(isSwingId(undefined)).toBe(false);
+  });
+});
+
+describe('DELETE_ORDER', () => {
+  it('deletes every swing file, the main clip last', () => {
+    expect([...DELETE_ORDER].sort()).toEqual([...SWING_FILE_EXTENSIONS].sort());
+    expect(DELETE_ORDER[DELETE_ORDER.length - 1]).toBe('mp4');
   });
 });
