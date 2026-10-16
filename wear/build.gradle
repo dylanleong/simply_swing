@@ -16,7 +16,7 @@ android {
     targetSdk 36
     // Wear builds live in the 1,000,000+ range so they never collide with phone versionCodes in Play.
     versionCode 1000001
-    versionName '0.1.0'
+    versionName '1.0.0'
   }
 
   signingConfigs {

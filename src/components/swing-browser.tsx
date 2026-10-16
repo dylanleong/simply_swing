@@ -234,7 +234,7 @@ function SwingTile({
         )}
         {badge ? (
           <View style={styles.badge}>
-            <ThemedText style={styles.badgeText} numberOfLines={1}>
+            <ThemedText style={styles.badgeText} numberOfLines={1} maxFontSizeMultiplier={1.3}>
               {badge}
             </ThemedText>
           </View>

@@ -46,6 +46,7 @@ export function SheetRow({
   danger = false,
   checked,
   detail,
+  disabled = false,
 }: {
   icon: IconName;
   label: string;
@@ -53,15 +54,21 @@ export function SheetRow({
   danger?: boolean;
   checked?: boolean;
   detail?: string;
+  /** Greyed out and ignores taps (e.g. while an export is running). */
+  disabled?: boolean;
 }) {
   const theme = useTheme();
   const color = danger ? theme.danger : theme.text;
   return (
     <Pressable
       accessibilityRole={checked === undefined ? 'button' : 'switch'}
-      accessibilityState={checked === undefined ? undefined : { checked }}
+      accessibilityState={checked === undefined ? { disabled } : { checked, disabled }}
+      disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.row, { backgroundColor: pressed ? theme.backgroundElement : 'transparent' }]}>
+      style={({ pressed }) => [
+        styles.row,
+        { backgroundColor: pressed ? theme.backgroundElement : 'transparent', opacity: disabled ? 0.4 : 1 },
+      ]}>
       <Icon name={icon} size={22} color={color} />
       <ThemedText style={[styles.rowLabel, { color }]}>{label}</ThemedText>
       {detail && (

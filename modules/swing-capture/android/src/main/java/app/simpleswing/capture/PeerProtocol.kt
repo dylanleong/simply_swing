@@ -13,11 +13,13 @@ import org.json.JSONObject
  * which is raw clip bytes. Times are capture-clock microseconds of the phone that receives them
  * (the main phone converts before sending), so the camera phone never needs the clock offset.
  *
- *   both   → HELLO   {v, role, name, platform, fps, view}
+ *   both   → HELLO   {v, role, name, platform, fps, view, code?}
+ *                     the main phone's carries the camera phone's pairing code; the camera answers
+ *                     with its own HELLO only once the code checks out (see PeerLink)
  *   main   → PING    {t1, syncUs?}                camera → PONG {t1, t2, t3}
  *   both   → STATE   {state}                      engine state; the camera follows armed/standby
  *   main   → TRIGGER {id, startUs, endUs, anchorUs}
- *   camera → REJECT  {id, reason}
+ *   camera → REJECT  {id, reason}               id "" + reason "code" / "wait": pairing refused
  *   camera → CLIP    {id, fps, durationMs, anchorOffsetMs, size}, then DATA… and DONE {id}
  *   both   → BYE     {}
  */
@@ -30,6 +32,8 @@ sealed class PeerMessage {
     val fps: Int,
     /** The camera's angle on the golfer: "dtl" or "faceOn" ("" from the main phone). */
     val view: String,
+    /** Main phone only: the pairing code the camera phone shows. */
+    val code: String? = null,
   ) : PeerMessage()
 
   /** [syncUs] is the main phone's current sync uncertainty, so the camera phone can show it too. */
@@ -64,7 +68,7 @@ sealed class PeerMessage {
 }
 
 object PeerProtocol {
-  const val VERSION = 1
+  const val VERSION = 2
   const val SERVICE_TYPE = "_simpleswing._tcp."
   const val DEFAULT_PORT = 47800
   const val CHUNK_BYTES = 64 * 1024
@@ -81,6 +85,32 @@ object PeerProtocol {
   private const val DATA = 8
   private const val DONE = 9
   private const val BYE = 10
+
+  /** Largest clip a camera phone may send (a 6 s 240 fps clip is ~40 MB). */
+  const val MAX_CLIP_BYTES = 256L * 1024 * 1024
+  /** Longest window a trigger may ask for, and how far ahead / back of now it may reach. */
+  const val MAX_WINDOW_US = 60_000_000L
+  const val MAX_AHEAD_US = 15_000_000L
+  const val MAX_BEHIND_US = 120_000_000L
+
+  private val CLIP_ID = Regex("^swing_[0-9]{1,16}$")
+
+  /** Clip ids become file names on both phones, so only ever accept the form the main phone makes. */
+  fun isValidClipId(id: String) = CLIP_ID.matches(id)
+
+  /**
+   * A trigger window (already on the camera's clock) the camera phone can actually save. Anything else
+   * is a corrupt or hostile message; a far-future end would leave the engine waiting for it.
+   */
+  fun isSaneWindow(startUs: Long, endUs: Long, nowUs: Long): Boolean {
+    // Compare differences of values first brought into a safe range, so nothing can overflow.
+    val limit = Long.MAX_VALUE / 4
+    if (startUs !in -limit..limit || endUs !in -limit..limit || nowUs !in -limit..limit) return false
+    return startUs < endUs &&
+      endUs - startUs <= MAX_WINDOW_US &&
+      endUs - nowUs <= MAX_AHEAD_US &&
+      nowUs - startUs <= MAX_BEHIND_US
+  }
 
   /** Writes one frame. Callers serialise writers on the stream. */
   fun write(out: DataOutputStream, message: PeerMessage) {
@@ -119,6 +149,7 @@ object PeerProtocol {
       is PeerMessage.Hello -> {
         j.put("v", message.version).put("role", message.role).put("name", message.name)
           .put("platform", message.platform).put("fps", message.fps).put("view", message.view)
+        message.code?.let { j.put("code", it) }
         HELLO
       }
       is PeerMessage.Ping -> {
@@ -160,6 +191,7 @@ object PeerProtocol {
   fun decode(type: Int, j: JSONObject): PeerMessage = when (type) {
     HELLO -> PeerMessage.Hello(
       j.getInt("v"), j.getString("role"), j.optString("name"), j.optString("platform"), j.optInt("fps"), j.optString("view"),
+      if (j.has("code")) j.getString("code") else null,
     )
     PING -> PeerMessage.Ping(j.getLong("t1"), if (j.has("syncUs")) j.getLong("syncUs") else null)
     PONG -> PeerMessage.Pong(j.getLong("t1"), j.getLong("t2"), j.getLong("t3"))

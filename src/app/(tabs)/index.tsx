@@ -1,7 +1,7 @@
 import { useEvent } from 'expo';
 import { Image } from 'expo-image';
-import { useKeepAwake } from 'expo-keep-awake';
-import { router, useFocusEffect } from 'expo-router';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { router, useFocusEffect, useIsFocused } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
@@ -11,12 +11,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { CaptureHelp } from '@/components/capture-help';
 import { GolferBox, type PreviewFrame } from '@/components/golfer-box';
 import { LevelIndicator } from '@/components/level-indicator';
+import { PermissionGate } from '@/components/permission-gate';
 import { SecondCameraSheet } from '@/components/second-camera-sheet';
 import { Icon } from '@/components/icon';
 import { IconButton } from '@/components/icon-button';
 import { ClubPicker, ResultChips } from '@/components/shot-tags';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import { useCapturePermission } from '@/hooks/use-capture-permission';
 import { PAIRING_ERROR_CODES, useMainPeerLink } from '@/hooks/use-main-peer-link';
 import { useTheme } from '@/hooks/use-theme';
 import {
@@ -33,11 +35,11 @@ import { idlePhase, shouldDim, type IdlePhase } from '@/lib/idle';
 import { formatSync } from '@/lib/multicam';
 import { dimScreen, restoreScreen } from '@/lib/screen-dimmer';
 import type { ShotResult } from '@/lib/swing-notes';
+import { SAVE_FAILED } from '@/lib/storage-alert';
 import { formatTempoRatio, parseTempo, type Tempo } from '@/lib/swing-library';
-import { listSwings, pruneOldSwings, updateSwingNotes } from '@/lib/swing-store';
+import { latestSwing as findLatestSwing, pruneOldSwingsOnce, updateSwingNotes } from '@/lib/swing-store';
 import SwingCapture, {
   SwingCaptureView,
-  useCapturePermissions,
   type ActiveFormat,
   type CaptureConfig,
   type ClipReadyEvent,
@@ -62,13 +64,17 @@ function captureConfig(s: CaptureSettings): CaptureConfig {
     impactTrigger: s.soundTrigger,
     watchMode: s.watchMode,
     savePracticeSwings: s.savePracticeSwings,
+    savedSound: s.savedSound,
   };
 }
 
 const latestSwing = () => {
-  const latest = listSwings()[0];
+  const latest = findLatestSwing();
   return latest ? { id: latest.id, thumbUri: latest.thumbUri } : null;
 };
+
+/** Keeps the screen on while Capture is in front (not on the other tabs, which stay mounted). */
+const KEEP_AWAKE_TAG = 'capture';
 
 /** 0.0008 s → "1/1250 s". */
 const formatShutter = (sec: number) => (sec >= 1 ? `${sec.toFixed(1)} s` : `1/${Math.round(1 / sec)} s`);
@@ -131,17 +137,22 @@ function instruction(state: EngineState, auto: boolean) {
 }
 
 export default function CaptureScreen() {
-  const [permission, requestPermission] = useCapturePermissions();
+  const [permission, requestPermission] = useCapturePermission();
 
   if (!permission) return <View style={styles.black} />;
   if (!permission.granted) {
-    return <PermissionGate canAsk={permission.canAskAgain} onRequest={requestPermission} />;
+    return (
+      <PermissionGate
+        why="SimpleSwing records your swing with the camera and listens for the sound of impact. Nothing leaves your phone."
+        canAsk={permission.canAskAgain}
+        onRequest={requestPermission}
+      />
+    );
   }
   return <Recorder />;
 }
 
 function Recorder() {
-  useKeepAwake();
   const theme = useTheme();
   const [settings, setSettings] = useState<CaptureSettings>(loadCaptureSettings);
   // Read by the focus effect so returning to the tab restarts with current preferences.
@@ -194,6 +205,11 @@ function Recorder() {
   /** Engine has actually entered standby since the last wake (to spot wakes from remote / watch). */
   const sawStandbyRef = useRef(false);
 
+  // The tabs stay mounted: idle dimming, standby and the replay only run while Capture is in front.
+  const focused = useIsFocused();
+  /** For event listeners: a clip can land just after leaving the tab (the engine saves a pending one on stop). */
+  const focusedRef = useRef(false);
+
   const markActive = useCallback(() => {
     lastActivityRef.current = Date.now();
     setPhase((p) => (p === 'active' ? p : 'active'));
@@ -202,17 +218,25 @@ function Recorder() {
   // Run the camera only while this tab is focused, with whatever Settings now says.
   useFocusEffect(
     useCallback(() => {
+      focusedRef.current = true;
       setError(null);
       markActive();
+      activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
       const current = loadCaptureSettings();
       settingsRef.current = current;
       setSettings(current);
-      pruneOldSwings(current.autoDeleteDays);
+      // Reads the whole library, so once per launch (Settings prunes when the period changes).
+      pruneOldSwingsOnce(current.autoDeleteDays);
       setLastSwing(latestSwing());
       resumeLink();
       SwingCapture.startAsync(captureConfig(current)).catch((e: Error) => setError(e.message));
       return () => {
+        focusedRef.current = false;
         SwingCapture.stopAsync().catch(() => {});
+        deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
+        setClip(null);
+        // Come back awake: nothing runs the idle timer while another tab is in front.
+        setPhase('active');
         restoreScreen();
       };
     }, [markActive, resumeLink])
@@ -233,9 +257,10 @@ function Recorder() {
         setSessionCount((n) => n + 1);
         setLastSwing({ id: swingIdFromUri(c.uri), thumbUri: c.thumbUri });
         setError(null);
+        // Tagged with the club even if Capture was left while it saved; only the replay needs the screen.
         const club = settingsRef.current.club;
-        if (club) updateSwingNotes(c.id, { club });
-        setClip(c);
+        if (club && !updateSwingNotes(c.id, { club })) setError(SAVE_FAILED);
+        if (focusedRef.current) setClip(c);
       }),
       SwingCapture.addListener('onSound', setLastSound),
       SwingCapture.addListener('onMotion', (m) => {
@@ -271,24 +296,25 @@ function Recorder() {
 
   // Once a second, work out how idle we are (a replay on screen counts as activity).
   useEffect(() => {
+    if (!focused) return;
     const timer = setInterval(() => {
       if (replayOpenRef.current) lastActivityRef.current = Date.now();
       const next = idlePhase(Date.now() - lastActivityRef.current, settingsRef.current);
       setPhase((p) => (p === next ? p : next));
     }, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [focused]);
 
-  // Apply the phase: screen brightness and camera power.
+  // Apply the phase: screen brightness and camera power. Never from behind another screen.
   const dimOpts = { dimScreen: settings.dimScreen, autoStandby: settings.autoStandby };
-  const dim = shouldDim(phase, dimOpts);
+  const dim = focused && shouldDim(phase, dimOpts);
   useEffect(() => {
     if (dim) dimScreen();
     else restoreScreen();
   }, [dim]);
   useEffect(() => {
-    SwingCapture.setStandby(phase === 'standby');
-  }, [phase]);
+    if (focused) SwingCapture.setStandby(phase === 'standby');
+  }, [phase, focused]);
 
   // A replay left open over the camera looks like a frozen preview (the player pauses while the app
   // is in the background), so always come back to the live view.
@@ -361,7 +387,7 @@ function Recorder() {
 
   /** Tags the replayed swing with what the ball did, then goes back to the camera. */
   const tagReplay = (result: ShotResult | null) => {
-    if (clip && result) updateSwingNotes(clip.id, { result });
+    if (clip && result && !updateSwingNotes(clip.id, { result })) setError(SAVE_FAILED);
     setClip(null);
   };
 
@@ -468,7 +494,9 @@ function Recorder() {
               hitSlop={6}
               style={styles.roundButton}>
               {settings.club ? (
-                <ThemedText style={styles.clubText}>{settings.club}</ThemedText>
+                <ThemedText style={styles.clubText} maxFontSizeMultiplier={1.2} numberOfLines={1}>
+                  {settings.club}
+                </ThemedText>
               ) : (
                 <Icon name="mci:golf" size={22} color="#fff" />
               )}
@@ -560,8 +588,14 @@ function Recorder() {
           accessibilityLabel="Auto-save when a ball is hit"
           onPress={onToggleAuto}
           style={[styles.sideControl, styles.autoChip, settings.soundTrigger && { borderColor: theme.accent }]}>
-          <ThemedText style={[styles.autoTitle, settings.soundTrigger && { color: theme.accent }]}>AUTO</ThemedText>
-          <ThemedText style={styles.autoState}>{settings.soundTrigger ? 'On' : 'Off'}</ThemedText>
+          <ThemedText
+            style={[styles.autoTitle, settings.soundTrigger && { color: theme.accent }]}
+            maxFontSizeMultiplier={1.3}>
+            AUTO
+          </ThemedText>
+          <ThemedText style={styles.autoState} maxFontSizeMultiplier={1.3}>
+            {settings.soundTrigger ? 'On' : 'Off'}
+          </ThemedText>
         </Pressable>
 
         <Pressable
@@ -576,7 +610,9 @@ function Recorder() {
               opacity: state !== 'armed' && state !== 'standby' ? 0.4 : pressed ? 0.7 : 1,
             },
           ]}>
-          <ThemedText style={styles.saveLabel}>SAVE</ThemedText>
+          <ThemedText style={styles.saveLabel} maxFontSizeMultiplier={1.3}>
+            SAVE
+          </ThemedText>
         </Pressable>
 
         <Pressable
@@ -594,7 +630,9 @@ function Recorder() {
           )}
           {sessionCount > 0 && (
             <View style={[styles.countBadge, { backgroundColor: theme.accent }]}>
-              <ThemedText style={styles.countText}>{sessionCount}</ThemedText>
+              <ThemedText style={styles.countText} maxFontSizeMultiplier={1.3}>
+                {sessionCount}
+              </ThemedText>
             </View>
           )}
         </Pressable>
@@ -613,7 +651,10 @@ function Recorder() {
         peers={link.peers}
         connecting={link.connecting}
         connectError={link.connectError}
-        onConnect={link.connect}
+        codeRequest={link.codeRequest}
+        onPick={link.pick}
+        onSubmitCode={link.submitCode}
+        onCancelCode={link.cancelCode}
         onStop={() => {
           link.turnOff();
           setShowCameraSheet(false);
@@ -621,28 +662,6 @@ function Recorder() {
         onClose={() => setShowCameraSheet(false)}
       />
     </View>
-  );
-}
-
-function PermissionGate({ canAsk, onRequest }: { canAsk: boolean; onRequest: () => void }) {
-  const theme = useTheme();
-  return (
-    <SafeAreaView style={[styles.gate, { backgroundColor: theme.background }]}>
-      <ThemedText type="subtitle">Camera & microphone</ThemedText>
-      <ThemedText themeColor="textSecondary">
-        SimpleSwing records your swing with the camera and listens for the sound of impact. Nothing
-        leaves your phone.
-      </ThemedText>
-      {canAsk ? (
-        <Pressable onPress={onRequest} style={[styles.gateButton, { backgroundColor: theme.accent }]}>
-          <ThemedText style={styles.gateButtonText}>Allow access</ThemedText>
-        </Pressable>
-      ) : (
-        <ThemedText themeColor="danger">
-          Access was denied. Enable Camera and Microphone for SimpleSwing in system Settings.
-        </ThemedText>
-      )}
-    </SafeAreaView>
   );
 }
 
@@ -768,12 +787,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   countText: { color: '#fff', fontWeight: '700', fontSize: 12, lineHeight: 16 },
-  gate: { flex: 1, padding: Spacing.four, gap: Spacing.three, justifyContent: 'center' },
-  gateButton: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.three,
-    borderRadius: Spacing.three,
-  },
-  gateButtonText: { color: '#fff', fontWeight: '700' },
 });

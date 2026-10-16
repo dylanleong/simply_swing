@@ -26,24 +26,27 @@ export function LevelIndicator({ active }: { active: boolean }) {
     if (!active) return;
     let sub: { remove: () => void } | null = null;
     let cancelled = false;
-    Accelerometer.isAvailableAsync().then((ok) => {
-      if (!ok || cancelled) return;
-      Accelerometer.setUpdateInterval(UPDATE_MS);
-      sub = Accelerometer.addListener(({ x, y, z }) => {
-        const next = smoothTilt(smoothed.current, tiltFromGravity(x, y, z));
-        smoothed.current = next;
-        const now = Date.now();
-        if (levelAdvice(next)) {
-          wasOff.current = true;
-          levelledUntil.current = 0;
-        } else if (wasOff.current) {
-          wasOff.current = false;
-          levelledUntil.current = now + LEVEL_SHOWN_MS;
-        }
-        setJustLevelled(now < levelledUntil.current);
-        setTilt(next);
-      });
-    });
+    Accelerometer.isAvailableAsync()
+      .then((ok) => {
+        if (!ok || cancelled) return;
+        Accelerometer.setUpdateInterval(UPDATE_MS);
+        sub = Accelerometer.addListener(({ x, y, z }) => {
+          const next = smoothTilt(smoothed.current, tiltFromGravity(x, y, z));
+          smoothed.current = next;
+          const now = Date.now();
+          if (levelAdvice(next)) {
+            wasOff.current = true;
+            levelledUntil.current = 0;
+          } else if (wasOff.current) {
+            wasOff.current = false;
+            levelledUntil.current = now + LEVEL_SHOWN_MS;
+          }
+          setJustLevelled(now < levelledUntil.current);
+          setTilt(next);
+        });
+      })
+      // No accelerometer to read: the level check just stays quiet.
+      .catch(() => {});
     return () => {
       cancelled = true;
       sub?.remove();

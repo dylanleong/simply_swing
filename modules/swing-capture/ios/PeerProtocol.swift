@@ -10,7 +10,8 @@ import Foundation
  */
 enum PeerMessage: Equatable {
   /// `view` is the camera's angle on the golfer: "dtl" or "faceOn" ("" from the main phone).
-  case hello(version: Int, role: String, name: String, platform: String, fps: Int, view: String)
+  /// `code` is the camera phone's pairing code, sent by the main phone only ("" from a camera phone).
+  case hello(version: Int, role: String, name: String, platform: String, fps: Int, view: String, code: String)
   /// `syncUs` is the main phone's current sync uncertainty, so the camera phone can show it too.
   case ping(t1: Int64, syncUs: Int64?)
   case pong(t1: Int64, t2: Int64, t3: Int64)
@@ -28,7 +29,8 @@ enum PeerMessage: Equatable {
 }
 
 enum PeerProtocol {
-  static let version = 1
+  /// 2: HELLO carries the pairing code, and a camera phone only answers a main phone that sent the right one.
+  static let version = 2
   /// Bonjour type, without the trailing dot NsdManager uses.
   static let serviceType = "_simpleswing._tcp"
   static let defaultPort: UInt16 = 47800
@@ -36,6 +38,14 @@ enum PeerProtocol {
   static let headerBytes = 5
   /// Control payloads are tiny and DATA is at most one chunk; anything bigger is a corrupt stream.
   static let maxPayload = 1 << 20
+  /// A received clip bigger than this (or bigger than it said it would be) is a broken or hostile peer.
+  static let maxClipBytes: Int64 = 256 << 20
+  /// Trigger windows the camera accepts (µs, on its own clock): at most this long...
+  static let maxWindowUs: Int64 = 60_000_000
+  /// ...ending no further ahead than this...
+  static let maxAheadUs: Int64 = 15_000_000
+  /// ...and starting no further back than this (the camera's ring buffer is far shorter anyway).
+  static let maxBehindUs: Int64 = 120_000_000
 
   private static let hello: UInt8 = 1
   private static let ping: UInt8 = 2
@@ -91,8 +101,10 @@ enum PeerProtocol {
 
   static func encode(_ message: PeerMessage) throws -> (UInt8, [String: Any]) {
     switch message {
-    case let .hello(version, role, name, platform, fps, view):
-      return (hello, ["v": version, "role": role, "name": name, "platform": platform, "fps": fps, "view": view])
+    case let .hello(version, role, name, platform, fps, view, code):
+      var j: [String: Any] = ["v": version, "role": role, "name": name, "platform": platform, "fps": fps, "view": view]
+      if !code.isEmpty { j["code"] = code }
+      return (hello, j)
     case let .ping(t1, syncUs):
       var j: [String: Any] = ["t1": t1]
       if let syncUs { j["syncUs"] = syncUs }
@@ -139,7 +151,8 @@ enum PeerProtocol {
         name: optString("name"),
         platform: optString("platform"),
         fps: (j["fps"] as? NSNumber)?.intValue ?? 0,
-        view: optString("view")
+        view: optString("view"),
+        code: optString("code")
       )
     case ping:
       return .ping(t1: try int64("t1"), syncUs: (j["syncUs"] as? NSNumber)?.int64Value)
@@ -166,5 +179,62 @@ enum PeerProtocol {
     default:
       return .unknown(type: type)
     }
+  }
+
+  // MARK: - Validation (v2)
+
+  /// `^swing_[0-9]{1,16}$`: the only ids either side builds a file path from.
+  static func isValidClipId(_ id: String) -> Bool {
+    let prefix = "swing_"
+    guard id.hasPrefix(prefix) else { return false }
+    let digits = id.utf8.dropFirst(prefix.utf8.count)
+    return (1...16).contains(digits.count) && digits.allSatisfy { $0 >= 0x30 && $0 <= 0x39 }
+  }
+
+  /// Camera side: is `startUs...endUs` (already on our clock) a window we'd plausibly be asked for?
+  /// Written so no comparison can overflow, whatever the peer sends (Swift traps on overflow).
+  static func isValidWindow(startUs: Int64, endUs: Int64, nowUs: Int64) -> Bool {
+    guard startUs < endUs else { return false }
+    let (length, lengthOverflow) = endUs.subtractingReportingOverflow(startUs)
+    guard !lengthOverflow, length <= maxWindowUs else { return false }
+    return endUs <= saturatingAdd(nowUs, maxAheadUs) && startUs >= saturatingAdd(nowUs, -maxBehindUs)
+  }
+
+  static func saturatingAdd(_ a: Int64, _ b: Int64) -> Int64 {
+    let (sum, overflow) = a.addingReportingOverflow(b)
+    guard overflow else { return sum }
+    return b > 0 ? .max : .min
+  }
+
+  /// Seconds → µs, or nil if it isn't a finite time that fits (Int64(_: Double) traps otherwise).
+  static func micros(fromSeconds seconds: Double) -> Int64? {
+    let us = (seconds * 1_000_000).rounded()
+    guard us.isFinite, us > -9.2e18, us < 9.2e18 else { return nil }
+    return Int64(us)
+  }
+
+  // MARK: - Pairing code (v2)
+
+  /// A fresh 6-digit code, zero-padded. SystemRandomNumberGenerator is cryptographically secure
+  /// (arc4random_buf on Apple platforms, getrandom on Linux).
+  static func newPairCode() -> String {
+    var rng = SystemRandomNumberGenerator()
+    let n = Int.random(in: 0..<1_000_000, using: &rng)
+    let digits = String(n)
+    return String(repeating: "0", count: 6 - digits.count) + digits
+  }
+
+  static func isValidPairCode(_ code: String) -> Bool {
+    code.utf8.count == 6 && code.utf8.allSatisfy { $0 >= 0x30 && $0 <= 0x39 }
+  }
+
+  /// Compares in time independent of where the codes differ (a nicety: the 2 s lockout is the real guard).
+  static func codesMatch(_ a: String, _ b: String) -> Bool {
+    let x = Array(a.utf8)
+    let y = Array(b.utf8)
+    guard x.count == y.count else { return false }
+    var diff: UInt8 = 0
+    for i in 0..<x.count { diff |= x[i] ^ y[i] }
+    return diff == 0
   }
 }

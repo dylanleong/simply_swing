@@ -4,6 +4,8 @@ import { StyleSheet, View, type GestureResponderEvent } from 'react-native';
 import { useTheme } from '@/hooks/use-theme';
 
 const THUMB = 16;
+/** A screen reader's swipe up / down moves this fraction of the clip. */
+const A11Y_STEPS = 30;
 
 /**
  * The clip's timeline: drag or tap to seek. A tick marks the impact so it's one drag away.
@@ -43,6 +45,12 @@ export function Scrubber({
   const shown = dragging ?? position;
   const fraction = duration > 0 ? Math.min(1, Math.max(0, shown / duration)) : 0;
 
+  const stepBy = (direction: 1 | -1) => {
+    if (duration <= 0) return;
+    onScrubStart?.();
+    onSeek(Math.min(duration, Math.max(0, position + (direction * duration) / A11Y_STEPS)));
+  };
+
   return (
     <View
       style={styles.hit}
@@ -60,7 +68,20 @@ export function Scrubber({
         setDragging(null);
       }}
       accessibilityRole="adjustable"
-      accessibilityLabel="Position in the swing">
+      accessibilityLabel="Position in the swing"
+      accessibilityValue={{
+        min: 0,
+        max: 100,
+        now: Math.round(fraction * 100),
+        text: `${shown.toFixed(2)} of ${duration.toFixed(2)} seconds${
+          impact != null && Math.abs(shown - impact) < duration / (2 * A11Y_STEPS) ? ', impact' : ''
+        }`,
+      }}
+      accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+      onAccessibilityAction={(e) => {
+        if (e.nativeEvent.actionName === 'increment') stepBy(1);
+        else if (e.nativeEvent.actionName === 'decrement') stepBy(-1);
+      }}>
       <View style={StyleSheet.absoluteFill} pointerEvents="none">
         <View style={[styles.track, { backgroundColor: theme.border }]} />
         <View style={[styles.track, styles.progress, { width: `${fraction * 100}%`, backgroundColor: theme.accent }]} />

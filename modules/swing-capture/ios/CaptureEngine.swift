@@ -81,6 +81,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   private var lastMotionReport = -Double.infinity
   private var lastExposureReport = -Double.infinity
   private var pending: PendingClip?
+  /// Capture-clock time until which impact sounds are ignored (our own saved chime is playing).
+  private var muteImpactUntil = -Double.infinity
+  private var cleanedLeftovers = false
 
   /// `id` is the file stem, chosen at trigger time so the camera phone's angle can share it.
   /// `forPeer` clips were asked for by the main phone: they're streamed to it rather than kept.
@@ -90,19 +93,24 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     let fps: Int
     let id: String
     let forPeer: Bool
+    /// Play the saved chime (config.savedSound when triggered; never for a camera phone's clips).
+    let chime: Bool
     var rotateRequested = false
     var exporting = false
 
-    init(source: TriggerSource, window: ClipWindow, fps: Int, id: String, forPeer: Bool = false) {
+    init(source: TriggerSource, window: ClipWindow, fps: Int, id: String, forPeer: Bool = false, chime: Bool = false) {
       self.source = source
       self.window = window
       self.fps = fps
       self.id = id
       self.forPeer = forPeer
+      self.chime = chime && !forPeer
     }
   }
 
   private static let cooldown = 3.0
+  /// Impact detection stays off this long after the chime ends (room echo, the phone's own speaker).
+  private static let chimeMuteMargin = 0.4
   private static let exportWatchdog = 3.0
   private static let standbyFps = 30
   private static let motionInterval = 1.0 / 15
@@ -120,6 +128,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   private override init() {
     super.init()
     peers.host = self
+    // We run the app's audio session ourselves (see applyAudioSession).
+    session.automaticallyConfiguresApplicationAudioSession = false
     let center = NotificationCenter.default
     center.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: nil) { [weak self] _ in
       self?.queue.async { self?.handleThermal() }
@@ -134,12 +144,30 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       let error = note.userInfo?[AVCaptureSessionErrorKey] as? Error
       self?.queue.async { self?.handleRuntimeError(error) }
     }
+    // Something else may have changed the shared audio session (expo-video, a call, Siri): put ours back.
+    center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil) { [weak self] _ in
+      self?.reapplyAudioSession(force: true)
+    }
+    center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: nil) { [weak self] note in
+      guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+            AVAudioSession.InterruptionType(rawValue: raw) == .ended
+      else { return }
+      self?.reapplyAudioSession(force: true)
+    }
+    center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: nil) { [weak self] note in
+      guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+            AVAudioSession.RouteChangeReason(rawValue: raw) == .categoryChange
+      else { return }
+      // e.g. expo-video switched to .playback for a replay on the Capture screen.
+      self?.reapplyAudioSession(force: false)
+    }
   }
 
   // MARK: - Public API (any thread)
 
   func start(_ config: CaptureConfig) {
     queue.async {
+      self.cleanLeftovers()
       self.standby = false
       self.configure(config)
     }
@@ -195,7 +223,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       source: source,
       window: ClipWindows.forTrigger(source, at: t, config: cfg),
       fps: _activeFps,
-      id: "swing_\(Int64(Date().timeIntervalSince1970 * 1000))"
+      id: "swing_\(Int64(Date().timeIntervalSince1970 * 1000))",
+      chime: cfg.savedSound
     )
     _state = .triggered
     let format = _format
@@ -246,9 +275,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
   private func configure(_ cfg: CaptureConfig) {
     config = cfg
-    recorder?.stop()
-    recorder = nil
-    pending = nil
+    stopRecorder()
     detector = nil
     ringWindow = ClipWindows.ringWindow(cfg)
     motionGate.setRoi(cfg.roi)
@@ -259,6 +286,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       _impactTrigger = cfg.impactTrigger
     }
 
+    if !standby && Self.micAllowed { Self.applyAudioSession(force: true) }
     do {
       try setUpSession(fps: standby ? Self.standbyFps : cfg.fps, sharp: cfg.sharpMode, withAudio: !standby)
     } catch {
@@ -295,11 +323,17 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       session.addInput(input)
       videoInput = input
     }
-    if withAudio, audioInput == nil, let mic = AVCaptureDevice.default(for: .audio) {
-      let input = try AVCaptureDeviceInput(device: mic)
-      if session.canAddInput(input) {
-        session.addInput(input)
-        audioInput = input
+    if withAudio, audioInput == nil, Self.micAllowed, let mic = AVCaptureDevice.default(for: .audio) {
+      // No usable mic (permission refused, or in use) must not stop the camera: record video only,
+      // and impact detection simply never hears anything.
+      do {
+        let input = try AVCaptureDeviceInput(device: mic)
+        if session.canAddInput(input) {
+          session.addInput(input)
+          audioInput = input
+        }
+      } catch {
+        NSLog("SwingCapture: no microphone, recording video only: \(error)")
       }
     } else if !withAudio, let input = audioInput {
       session.removeInput(input)
@@ -353,22 +387,57 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     video[AVVideoCompressionPropertiesKey] = compression
     let audio = audioInput == nil ? nil : audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mp4) as? [String: Any]
 
+    // Each recorder has its own folder: one that's stopping may still be saving a clip from its chunks.
     return ChunkRecorder(
-      dir: chunkDir,
+      dir: chunkDir.appendingPathComponent(UUID().uuidString, isDirectory: true),
       queue: queue,
       videoSettings: video,
       audioSettings: audio,
-      transform: Self.portraitTransform
-    ) { [weak self] chunk in
-      self?.onChunkFinished(chunk)
+      transform: Self.portraitTransform,
+      onChunk: { [weak self] chunk in self?.onChunkFinished(chunk) },
+      onError: { [weak self] code, message in self?.listener?.engineError(code: code, message: message) }
+    )
+  }
+
+  /// Stops the rolling buffer. A clip that was triggered but isn't exported yet (standby, stop, an
+  /// interruption or a reconfigure mid-swing) is not dropped: it's saved from what was recorded so
+  /// far, its end clamped to the last recorded frame. An export already running keeps its chunks.
+  private func stopRecorder() {
+    let clip = pending
+    pending = nil
+    guard let r = recorder else { return }
+    recorder = nil
+    guard let clip, !clip.exporting else {
+      r.stop()
+      return
     }
+    clip.exporting = true
+    r.stop(keeping: { [weak self] chunks in
+      guard let self else {
+        r.release()
+        return
+      }
+      guard let last = chunks.map(\.end).max(), last > clip.window.start else {
+        r.release()
+        if !clip.forPeer {
+          self.listener?.engineError(code: "E_EXPORT", message: "Couldn't save that swing: recording stopped.")
+        }
+        return
+      }
+      let window = ClipWindow(
+        start: clip.window.start,
+        end: min(clip.window.end, last),
+        impact: clip.window.impact,
+        anchor: clip.window.anchor
+      )
+      NSLog("SwingCapture: recording stopped mid-clip; saving \(clip.id) up to \(window.end - window.start) s")
+      self.export(clip, window: window, chunks: chunks.filter { $0.end >= window.start && $0.start <= window.end }, from: r)
+    })
   }
 
   private func teardown() {
     if session.isRunning { session.stopRunning() }
-    recorder?.stop()
-    recorder = nil
-    pending = nil
+    stopRecorder()
     detector = nil
     setState(.idle)
   }
@@ -426,6 +495,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     let reason: String?
     if !loudEnough {
       reason = "quiet"
+    } else if time < muteImpactUntil {
+      // Our own saved chime (or its echo).
+      reason = "touch"
     } else if !impactTrigger {
       reason = "off"
     } else if let motion, !motion.passed {
@@ -485,12 +557,17 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     guard let clip = pending, !clip.exporting, chunk.end >= clip.window.end, let recorder else { return }
     clip.exporting = true
     setState(.exporting)
-    let chunks = recorder.chunks(overlapping: clip.window.start, clip.window.end)
-    let url = (clip.forPeer ? peerDir : clipsDir).appendingPathComponent("\(clip.id).mp4")
+    // Hold the chunk files even if the recorder is stopped (standby, reconfigure) mid-export.
+    recorder.hold()
+    export(clip, window: clip.window, chunks: recorder.chunks(overlapping: clip.window.start, clip.window.end), from: recorder)
+  }
 
+  /// Saves `clip` from `chunks` (held in `recorder` until this calls release()).
+  private func export(_ clip: PendingClip, window: ClipWindow, chunks: [ChunkRecorder.Chunk], from recorder: ChunkRecorder) {
+    let url = (clip.forPeer ? peerDir : clipsDir).appendingPathComponent("\(clip.id).mp4")
     Task {
       do {
-        let written = try await ClipExporter.export(chunks: chunks, window: clip.window, to: url, thumbnail: !clip.forPeer)
+        let written = try await ClipExporter.export(chunks: chunks, window: window, to: url, thumbnail: !clip.forPeer)
         if clip.forPeer {
           self.peers.sendClip(
             id: clip.id,
@@ -502,10 +579,13 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         } else {
           self.clipSaved(written, clip: clip)
         }
+      } catch is StorageFullException {
+        self.listener?.engineError(code: Storage.fullCode, message: Storage.fullMessage)
       } catch {
         self.listener?.engineError(code: "E_EXPORT", message: error.localizedDescription)
       }
       self.queue.async {
+        recorder.release()
         guard self.pending === clip else { return }
         self.pending = nil
         if self.state == .exporting { self.setState(.armed) }
@@ -528,6 +608,13 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     sidecar["createdAt"] = Int64(Date().timeIntervalSince1970 * 1000)
     ClipExporter.writeSidecar(for: written.url, info: sidecar)
     listener?.engineClipReady(info)
+    if clip.chime && peers.role != .camera {
+      queue.async {
+        // Mute first: the chime reaches the mic within milliseconds of play().
+        self.muteImpactUntil = self.now() + SavedChime.duration + Self.chimeMuteMargin
+        SavedChime.play()
+      }
+    }
   }
 
   private func abandonIfStuck(_ clip: PendingClip) {
@@ -550,10 +637,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   }
 
   private func handleInterruption() {
-    // Phone call, Control Centre camera, another app took the camera: drop partial chunks.
-    recorder?.stop()
-    recorder = nil
-    pending = nil
+    // Phone call, Control Centre camera, another app took the camera: stop recording (a clip in
+    // progress is still saved from what was recorded).
+    stopRecorder()
     setState(.idle)
   }
 
@@ -572,7 +658,73 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
   }
 
+  // MARK: - Audio session
+
+  private static var micAllowed: Bool { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }
+
+  /// The capture session's automatic audio setup is off (automaticallyConfiguresApplicationAudioSession):
+  /// it would stop other apps' music, and the session is shared with expo-video, which switches it to
+  /// .playback for a replay. That silently cuts the mic (no impact detection, silent clips) until
+  /// someone sets it back. So we set playAndRecord ourselves: mixing with music, out of the speaker
+  /// rather than the earpiece, and re-applied whenever something may have changed it.
+  ///
+  /// `force` false (after a category change): only if someone else switched the category away, so
+  /// the notification our own change posts can't start a loop.
+  private static func applyAudioSession(force: Bool) {
+    let audio = AVAudioSession.sharedInstance()
+    if !force && audio.category == .playAndRecord { return }
+    let options: AVAudioSession.CategoryOptions = [.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP]
+    do {
+      if audio.category != .playAndRecord || audio.mode != .videoRecording || audio.categoryOptions != options {
+        do {
+          try audio.setCategory(.playAndRecord, mode: .videoRecording, options: options)
+        } catch {
+          try audio.setCategory(.playAndRecord, mode: .default, options: options)
+        }
+      }
+      // System sounds (the saved chime) are otherwise muted while the mic records.
+      if !audio.allowHapticsAndSystemSoundsDuringRecording {
+        try audio.setAllowHapticsAndSystemSoundsDuringRecording(true)
+      }
+      try audio.setActive(true)
+    } catch {
+      NSLog("SwingCapture: couldn't set up the audio session: \(error)")
+    }
+  }
+
+  /// Off the capture queue (activation can take a while); only while we're recording with the mic.
+  private func reapplyAudioSession(force: Bool) {
+    queue.async {
+      guard self.config != nil, !self.standby, self.audioInput != nil else { return }
+      DispatchQueue.global(qos: .userInitiated).async { Self.applyAudioSession(force: force) }
+    }
+  }
+
   // MARK: - Helpers
+
+  /// Once per launch, before the first recorder: files a killed or crashed run left behind.
+  private func cleanLeftovers() {
+    guard !cleanedLeftovers else { return }
+    cleanedLeftovers = true
+    let fm = FileManager.default
+    // Rolling-buffer chunks, and camera-role clips that were never sent.
+    try? fm.removeItem(at: chunkDir)
+    try? fm.removeItem(at: peerDir)
+    let now = Date()
+    func removeOld(in dir: URL, olderThan age: TimeInterval, where match: (URL) -> Bool = { _ in true }) {
+      let key = URLResourceKey.contentModificationDateKey
+      guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [key]) else { return }
+      for file in files where match(file) {
+        let modified = (try? file.resourceValues(forKeys: [key]))?.contentModificationDate ?? .distantPast
+        if now.timeIntervalSince(modified) > age { try? fm.removeItem(at: file) }
+      }
+    }
+    // Unfinished exports and half-received second angles (an hour old: never one still being written).
+    removeOld(in: ClipExporter.partialDir, olderThan: 3600)
+    removeOld(in: clipsDir, olderThan: 3600) { $0.pathExtension == "part" }
+    // Slow-motion / side-by-side copies for Save and Share.
+    removeOld(in: SwingFiles.exportsDir, olderThan: 86_400)
+  }
 
   private func fail(code: String, message: String) {
     listener?.engineError(code: code, message: message)
@@ -684,7 +836,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
 extension CaptureEngine: PeerLinkHost {
   func peerNowUs() -> Int64 {
-    Int64((now() * 1_000_000).rounded())
+    PeerProtocol.micros(fromSeconds: now()) ?? 0
   }
 
   func peerFps() -> Int {

@@ -47,6 +47,11 @@ export type CaptureConfig = {
   watchMode: WatchMode;
   /** With the watch sensing: save swings that had no impact sound (practice swings). */
   savePracticeSwings: boolean;
+  /**
+   * Play a short chime when a swing is saved (follows the phone's silent switch / ringer). The impact
+   * detector ignores the chime. Camera phones never chime.
+   */
+  savedSound: boolean;
 };
 
 export type CaptureCapabilities = {
@@ -134,6 +139,11 @@ export type PeerStatusEvent = {
   /** Clock-sync uncertainty, ± ms; null until measured. */
   syncMs: number | null;
   address: string | null;
+  /**
+   * Camera role: this phone's 6-digit pairing code, shown on screen and typed on the main phone the
+   * first time. It stays the same between sessions. Null in other roles.
+   */
+  code: string | null;
 };
 
 /**

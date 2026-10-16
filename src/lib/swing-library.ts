@@ -144,6 +144,11 @@ export function swingsToPrune(swings: readonly Swing[], days: number, now = Date
   return swings.filter((s) => !s.notes.favorite && now - s.createdAt > days * DAY_MS).map((s) => s.id);
 }
 
+/** The question asked before a shorter auto-delete period removes [count] swings at once. */
+export function pruneQuestion(count: number, days: number): string {
+  return `Delete ${count} swing${count === 1 ? '' : 's'} older than ${days} day${days === 1 ? '' : 's'}? Favourites are kept.`;
+}
+
 /** The library's filter: null fields match everything. */
 export type SwingFilter = { club: Club | null; result: ShotResult | null; favorites: boolean };
 
@@ -183,7 +188,8 @@ export function formatSession(session: Pick<Session, 'start' | 'end'>, now = Dat
   const time = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   const start = new Date(session.start);
   const today = new Date(now);
-  const yesterday = new Date(now - DAY_MS);
+  // The calendar day before (not 24 h ago, which misses on the day the clocks change).
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
   const day =
     start.toDateString() === today.toDateString()
       ? 'Today'

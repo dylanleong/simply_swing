@@ -5,9 +5,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { PermissionGate } from '@/components/permission-gate';
 import { Segmented } from '@/components/segmented';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import { useCapturePermission } from '@/hooks/use-capture-permission';
 import { useTheme } from '@/hooks/use-theme';
 import {
   CAMERA_VIEW_OPTIONS,
@@ -22,7 +24,6 @@ import { formatSync, VIEW_LABEL } from '@/lib/multicam';
 import { dimScreen, restoreScreen } from '@/lib/screen-dimmer';
 import SwingCapture, {
   SwingCaptureView,
-  useCapturePermissions,
   type CameraView,
   type CaptureConfig,
   type PeerStatusEvent,
@@ -48,26 +49,32 @@ function cameraConfig(s: CaptureSettings): CaptureConfig {
     impactTrigger: false,
     watchMode: 'off',
     savePracticeSwings: false,
+    // The main phone chimes; this one sits on a tripod.
+    savedSound: false,
   };
 }
 
+/** "482913" → "482 913": easier to read across from a tripod. */
+const spacedCode = (code: string) => `${code.slice(0, 3)} ${code.slice(3)}`;
+
+/** Back to where camera mode was opened from, or the tabs after a cold start. */
+const leave = () => (router.canGoBack() ? router.back() : router.replace('/settings'));
+
 export default function CameraModeScreen() {
-  const [permission, requestPermission] = useCapturePermissions();
-  const theme = useTheme();
+  const [permission, requestPermission] = useCapturePermission();
 
   if (!permission) return <View style={styles.black} />;
   if (!permission.granted) {
     return (
-      <SafeAreaView style={[styles.gate, { backgroundColor: theme.background }]}>
+      <>
         <Stack.Screen options={{ headerShown: false }} />
-        <ThemedText type="subtitle">Camera & microphone</ThemedText>
-        <ThemedText themeColor="textSecondary">This phone needs the camera to film the second angle.</ThemedText>
-        {permission.canAskAgain && (
-          <Pressable onPress={requestPermission} style={[styles.button, { backgroundColor: theme.accent }]}>
-            <ThemedText style={styles.buttonText}>Allow access</ThemedText>
-          </Pressable>
-        )}
-      </SafeAreaView>
+        <PermissionGate
+          why="This phone needs the camera to film the second angle."
+          canAsk={permission.canAskAgain}
+          onRequest={requestPermission}
+          onClose={leave}
+        />
+      </>
     );
   }
   return <CameraPhone />;
@@ -126,6 +133,7 @@ function CameraPhone() {
   };
 
   const connected = status?.state === 'connected';
+  const code = status?.code ?? null;
   const sync = formatSync(status?.syncMs ?? null);
   const engineLabel =
     state === 'armed'
@@ -156,10 +164,21 @@ function CameraPhone() {
               {filmed > 0 ? ` · ${filmed} swing${filmed === 1 ? '' : 's'} sent` : ''}
             </ThemedText>
           ) : (
-            <ThemedText type="small" style={styles.text}>
-              On the main phone, tap + Cam on the Capture screen. Both phones need the same Wi-Fi or hotspot.
-              {status?.address ? `\nIf it isn't listed, type ${status.address}` : ''}
-            </ThemedText>
+            <>
+              {code && (
+                <ThemedText
+                  style={styles.code}
+                  maxFontSizeMultiplier={1.3}
+                  accessibilityLabel={`Code ${code.split('').join(' ')}`}>
+                  {`Code ${spacedCode(code)}`}
+                </ThemedText>
+              )}
+              <ThemedText type="small" style={styles.text}>
+                On the main phone, tap + Cam, pick this phone and enter this code. Both phones need the same Wi-Fi
+                or hotspot.
+                {status?.address ? `\nIf it isn't listed, type ${status.address}` : ''}
+              </ThemedText>
+            </>
           )}
           {error && (
             <ThemedText type="small" style={styles.error}>
@@ -182,7 +201,7 @@ function CameraPhone() {
           />
           <Pressable
             accessibilityRole="button"
-            onPress={() => router.back()}
+            onPress={leave}
             style={({ pressed }) => [styles.button, styles.exit, { opacity: pressed ? 0.7 : 1 }]}>
             <ThemedText style={styles.buttonText}>Stop camera mode</ThemedText>
           </Pressable>
@@ -204,7 +223,7 @@ const styles = StyleSheet.create({
   title: { color: '#fff', fontWeight: '700', flexShrink: 1 },
   text: { color: '#fff' },
   error: { color: '#FF8A80' },
-  gate: { flex: 1, padding: Spacing.four, gap: Spacing.three, justifyContent: 'center' },
+  code: { color: '#fff', fontSize: 34, lineHeight: 42, fontWeight: '800', letterSpacing: 3, fontVariant: ['tabular-nums'] },
   button: {
     paddingHorizontal: Spacing.four,
     paddingVertical: Spacing.three,

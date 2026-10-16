@@ -32,6 +32,8 @@ protocol PeerLinkHost: AnyObject {
 
  - **Camera** phone: an NWListener on TCP `PeerProtocol.defaultPort`, advertised over Bonjour as
    `_simpleswing._tcp`. Saves whatever window the main phone asks for, then streams the clip back.
+   A new connection stays *unauthenticated* (ignored, not replacing the live link) until it sends a
+   main-phone HELLO with this phone's 6-digit pairing code; a wrong code locks every HELLO out for 2 s.
  - **Main** phone: an NWBrowser finds camera phones; it connects to one, pings it every second to keep
    a ClockSync, and converts each accepted trigger's window to the camera's clock before sending.
    Received clips become `<id>.b.mp4` + `<id>.b.json` beside the main clip.
@@ -48,6 +50,8 @@ final class PeerLink {
     let peerState: String?
     let syncMs: Double?
     let address: String?
+    /// Camera role: this phone's pairing code, shown on screen; nil otherwise.
+    let code: String?
   }
 
   /// `host` is empty for Bonjour results: Network.framework connects to the service without resolving it.
@@ -86,15 +90,42 @@ final class PeerLink {
   /// Main role: the user asked to connect; report if it fails (the 1 s retries stay silent).
   private var reportConnectFailure = false
   private var lastStatus: Status?
-  /// Main role: sync uncertainty when each pending trigger was sent, for the angle sidecar.
-  private var triggerSyncMs: [String: Double] = [:]
+  /// Main role: the camera phone's pairing code, sent in our HELLO.
+  private var targetCode = ""
+  /// Main role: ids we sent a TRIGGER for (only their clips are accepted), when, and the sync
+  /// uncertainty at that moment (for the angle sidecar). Dropped after `triggerExpiry`, REJECT or DONE.
+  private var sentTriggers: [String: SentTrigger] = [:]
+  /// Camera role: connections that haven't sent a valid main-phone HELLO yet.
+  private var unauthenticated: [Connection] = []
+  /// Camera role: after a wrong code every HELLO is refused until this uptime (global, not per connection).
+  private var lockoutUntil: TimeInterval = 0
   private var timer: DispatchSourceTimer?
+
+  private struct SentTrigger {
+    let at: TimeInterval
+    let syncMs: Double?
+  }
 
   private static let tickInterval = 1.0
   private static let silenceTimeout = 6.0
   private static let connectTimeout = 3.0
+  private static let helloTimeout = 5.0
+  private static let codeLockout = 2.0
+  private static let triggerExpiry = 60.0
+  /// Camera role: unauthenticated connections kept at once; the oldest is dropped beyond this.
+  private static let maxUnauthenticated = 4
+  private static let pairCodeKey = "simpleswing.pairCode"
   /// kDNSServiceErr_PolicyDenied (dns_sd.h): Bonjour blocked by the Local Network permission.
   private static let dnsPolicyDenied: Int32 = -65570
+
+  /// Camera role: this phone's pairing code. Made once and kept, so the main phone can remember it.
+  private lazy var pairCode: String = {
+    let defaults = UserDefaults.standard
+    if let saved = defaults.string(forKey: PeerLink.pairCodeKey), PeerProtocol.isValidPairCode(saved) { return saved }
+    let code = PeerProtocol.newPairCode()
+    defaults.set(code, forKey: PeerLink.pairCodeKey)
+    return code
+  }()
 
   init() {
     // UIDevice is main-actor only. Since iOS 16 this is "iPhone" / "iPad" unless the app has the
@@ -140,8 +171,8 @@ final class PeerLink {
     }
   }
 
-  /// Main role: a discovered peer id, or a typed `host[:port]`.
-  func connect(_ idOrAddress: String) {
+  /// Main role: a discovered peer id, or a typed `host[:port]`, with the camera phone's pairing code.
+  func connect(_ idOrAddress: String, code: String) {
     queue.async { [self] in
       guard role == .main else { return }
       guard let endpoint = found[idOrAddress]?.endpoint ?? Self.parseAddress(idOrAddress) else {
@@ -149,6 +180,7 @@ final class PeerLink {
         return
       }
       target = endpoint
+      targetCode = code.trimmingCharacters(in: .whitespacesAndNewlines)
       reportConnectFailure = true
       connection?.close("switching camera")
       connecting?.cancel()
@@ -161,13 +193,15 @@ final class PeerLink {
   /// it's sent on the camera's (µs). Does nothing if there's no synced camera.
   func sendTrigger(id: String, window: ClipWindow) {
     queue.async { [self] in
-      guard role == .main, let c = connection, c.hello != nil, let offset = c.sync.offsetUs else { return }
-      if let error = c.sync.errorUs { triggerSyncMs[id] = Double(error) / 1000 }
-      let peerUs = { (seconds: Double) in Int64((seconds * 1_000_000).rounded()) + offset }
-      let start = peerUs(window.start)
-      let end = peerUs(window.end)
+      guard role == .main, let c = connection, c.hello != nil, PeerProtocol.isValidClipId(id) else { return }
+      let peerUs = { (seconds: Double) in PeerProtocol.micros(fromSeconds: seconds).flatMap { c.sync.toPeer($0) } }
+      guard let start = peerUs(window.start), let end = peerUs(window.end), let anchor = peerUs(window.anchor) else { return }
+      sentTriggers[id] = SentTrigger(
+        at: ProcessInfo.processInfo.systemUptime,
+        syncMs: c.sync.errorUs.map { Double($0) / 1000 }
+      )
       NSLog("SwingPeerLink: trigger \(id) → camera (window \(start)..\(end))")
-      c.send(.trigger(id: id, startUs: start, endUs: end, anchorUs: peerUs(window.anchor)))
+      c.send(.trigger(id: id, startUs: start, endUs: end, anchorUs: anchor))
     }
   }
 
@@ -237,7 +271,8 @@ final class PeerLink {
       name: deviceName,
       platform: "ios",
       fps: host?.peerFps() ?? 0,
-      view: view
+      view: view,
+      code: role == .main ? targetCode : ""
     )
   }
 
@@ -248,15 +283,18 @@ final class PeerLink {
       connection = nil
       c.send(.bye) { _ in c.close("stopped") }
     }
+    for c in unauthenticated { c.close("stopped") }
+    unauthenticated.removeAll()
     connecting?.cancel()
     connecting = nil
     target = nil
+    targetCode = ""
     browser?.cancel()
     browser = nil
     listener?.cancel()
     listener = nil
     found.removeAll()
-    triggerSyncMs.removeAll()
+    sentTriggers.removeAll()
     setRole(.solo)
   }
 
@@ -272,6 +310,8 @@ final class PeerLink {
     if let c = connection, ProcessInfo.processInfo.systemUptime - c.lastHeard > Self.silenceTimeout {
       c.close("no reply for \(Int(Self.silenceTimeout)) s")
     }
+    let now = ProcessInfo.processInfo.systemUptime
+    sentTriggers = sentTriggers.filter { now - $0.value.at < Self.triggerExpiry }
     if role == .main {
       if let live = connection {
         live.send(.ping(t1: host?.peerNowUs() ?? 0, syncUs: live.sync.errorUs))
@@ -306,7 +346,7 @@ final class PeerLink {
           nw.cancel()
           return
         }
-        self.adopt(nw, started: true)
+        self.adopt(nw)
       case let .failed(error), let .waiting(error):
         // .waiting covers "refused" and "no route"; the tick retries rather than Network.framework.
         NSLog("SwingPeerLink: connect to \(endpoint) failed: \(error)")
@@ -335,18 +375,79 @@ final class PeerLink {
     )
   }
 
-  private func adopt(_ nw: NWConnection, started: Bool) {
+  /// Main role: our own outgoing connection is trusted; say HELLO (with the camera's code) at once.
+  private func adopt(_ nw: NWConnection) {
     connection?.close("replaced")
     let c = Connection(nw, link: self)
+    c.authenticated = true
     connection = c
-    c.start(started: started)
+    c.start(started: true)
     c.send(helloMessage())
     c.send(.state((host?.peerEngineState() ?? .idle).rawValue))
     NSLog("SwingPeerLink: connected to \(nw.endpoint) as \(role.rawValue)")
     reportStatus()
   }
 
+  /// Camera role: an incoming connection waits, unauthenticated, for the main phone's HELLO. It
+  /// doesn't touch the live link, and is closed if no valid HELLO arrives within `helloTimeout`.
+  private func accept(_ nw: NWConnection) {
+    if unauthenticated.count >= Self.maxUnauthenticated { unauthenticated.first?.close("too many connections") }
+    let c = Connection(nw, link: self)
+    unauthenticated.append(c)
+    c.start(started: false)
+    queue.asyncAfter(deadline: .now() + Self.helloTimeout) { [weak c] in
+      guard let c, !c.authenticated, !c.closed else { return }
+      c.close("no hello within \(Int(Self.helloTimeout)) s")
+    }
+  }
+
+  /// Camera role: the HELLO of an unauthenticated connection. Accepts it (replacing any older link:
+  /// the newest authenticated main phone wins) or refuses it.
+  private func authenticate(_ c: Connection, version: Int, role peerRole: String, name: String, view: String, code: String) {
+    let now = ProcessInfo.processInfo.systemUptime
+    let refuse = { (reason: String) in
+      c.refused = true
+      c.send(.reject(id: "", reason: reason)) { _ in c.close("refused: \(reason)") }
+    }
+    // Same order as PeerLink.kt: role, version, lockout, code.
+    guard peerRole == PeerRole.main.rawValue else {
+      c.close("hello from a \(peerRole), not a main phone")
+      return
+    }
+    guard version == PeerProtocol.version else {
+      // Our HELLO tells an older or newer main phone about the mismatch too, so both phones say so.
+      host?.peerError(code: "E_PEER_VERSION", message: "Update SimpleSwing on both phones to use them together.")
+      c.refused = true
+      c.send(helloMessage()) { _ in c.close("version \(version)") }
+      return
+    }
+    if now < lockoutUntil {
+      refuse("wait")
+      return
+    }
+    guard PeerProtocol.codesMatch(code, pairCode) else {
+      lockoutUntil = now + Self.codeLockout
+      NSLog("SwingPeerLink: main phone sent the wrong pairing code")
+      refuse("code")
+      return
+    }
+    unauthenticated.removeAll { $0 === c }
+    c.authenticated = true
+    c.lastHeard = now
+    c.hello = Connection.Hello(name: name, view: view)
+    connection?.close("replaced")
+    connection = c
+    c.send(helloMessage())
+    c.send(.state((host?.peerEngineState() ?? .idle).rawValue))
+    NSLog("SwingPeerLink: main phone \(name) connected")
+    reportStatus()
+  }
+
   fileprivate func closed(_ c: Connection, reason: String) {
+    if let i = unauthenticated.firstIndex(where: { $0 === c }) {
+      unauthenticated.remove(at: i)
+      return
+    }
     guard connection === c else { return }
     connection = nil
     NSLog("SwingPeerLink: link closed: \(reason)")
@@ -372,7 +473,8 @@ final class PeerLink {
       peerState: connected ? c?.peerState : nil,
       // Whole-ms resolution keeps the status from changing on every ping.
       syncMs: syncUs.map { max(1, (Double($0) / 1000).rounded()) },
-      address: role == .camera ? localAddress() : nil
+      address: role == .camera ? localAddress() : nil,
+      code: role == .camera ? pairCode : nil
     )
     if status != lastStatus {
       lastStatus = status
@@ -420,8 +522,8 @@ final class PeerLink {
         nw.cancel()
         return
       }
-      // The newest main phone wins: a dropped link reconnecting replaces its stale socket.
-      self.adopt(nw, started: false)
+      // Once authenticated, the newest main phone wins: a dropped link reconnecting replaces its stale socket.
+      self.accept(nw)
     }
     listener = l
     l.start(queue: queue)
@@ -465,10 +567,17 @@ final class PeerLink {
   // MARK: - Messages
 
   fileprivate func handle(_ c: Connection, _ m: PeerMessage, receivedUs: Int64) {
+    if !c.authenticated {
+      // Camera role, unauthenticated: only a HELLO counts; everything else is ignored.
+      if !c.refused, case let .hello(version, peerRole, name, _, _, view, code) = m {
+        authenticate(c, version: version, role: peerRole, name: name, view: view, code: code)
+      }
+      return
+    }
     guard connection === c else { return }
     c.lastHeard = ProcessInfo.processInfo.systemUptime
     switch m {
-    case let .hello(version, _, name, _, _, view):
+    case let .hello(version, _, name, _, _, view, _):
       guard version == PeerProtocol.version else {
         host?.peerError(code: "E_PEER_VERSION", message: "Update SimpleSwing on both phones to use them together.")
         c.close("version \(version)")
@@ -487,17 +596,42 @@ final class PeerLink {
       reportStatus()
     case let .trigger(id, startUs, endUs, anchorUs):
       guard role == .camera else { return }
+      // The id becomes a file name: never build a path from anything else.
+      guard PeerProtocol.isValidClipId(id) else {
+        c.send(.reject(id: String(id.prefix(64)), reason: "id"))
+        return
+      }
+      guard PeerProtocol.isValidWindow(startUs: startUs, endUs: endUs, nowUs: receivedUs) else {
+        NSLog("SwingPeerLink: main phone trigger \(id) has an implausible window; rejected")
+        c.send(.reject(id: id, reason: "window"))
+        return
+      }
       let window = ClipWindow(
         start: Double(startUs) / 1_000_000,
         end: Double(endUs) / 1_000_000,
         impact: nil,
         anchor: Double(anchorUs) / 1_000_000
       )
+      // Safe: isValidWindow bounds endUs to within 2 min of receivedUs.
       NSLog("SwingPeerLink: main phone trigger \(id) (window ends in \((endUs - receivedUs) / 1000) ms)")
       if host?.peerTrigger(id: id, window: window) != true { c.send(.reject(id: id, reason: "busy")) }
     case let .reject(id, reason):
+      guard role == .main else { return }
+      if id.isEmpty {
+        // The camera refused the link itself.
+        if reason == "code" {
+          NSLog("SwingPeerLink: camera phone refused the pairing code")
+          target = nil
+          targetCode = ""
+          reportConnectFailure = false
+          host?.peerError(code: "E_PEER_CODE", message: "That code doesn't match. Check the code on the camera phone's screen.")
+        }
+        // "wait" (a wrong code was tried moments ago): drop the link; the tick retries as usual.
+        c.close("refused: \(reason)")
+        return
+      }
       NSLog("SwingPeerLink: camera phone missed \(id): \(reason)")
-      triggerSyncMs[id] = nil
+      sentTriggers[id] = nil
       host?.peerError(code: "E_PEER_MISSED", message: "The second camera wasn't ready for that swing.")
     case .bye:
       c.close("peer left")
@@ -514,18 +648,38 @@ final class PeerLink {
     switch m {
     case let .clip(id, fps, durationMs, anchorOffsetMs, size):
       c.incoming?.abort()
+      c.incoming = nil
+      // Only clips we asked for; DATA and DONE that follow an ignored CLIP are dropped (no incoming).
+      guard PeerProtocol.isValidClipId(id), sentTriggers[id] != nil else {
+        NSLog("SwingPeerLink: ignoring clip \(id.prefix(64)): not one we triggered")
+        return
+      }
+      guard size > 0, size <= PeerProtocol.maxClipBytes else {
+        NSLog("SwingPeerLink: clip \(id) refused: \(size) bytes")
+        sentTriggers[id] = nil
+        host?.peerError(code: "E_PEER_CLIP", message: "Couldn't save the second camera's clip.")
+        return
+      }
       c.incoming = Incoming(id: id, fps: fps, durationMs: durationMs, anchorOffsetMs: anchorOffsetMs, size: size)
     case let .data(bytes):
       guard let clip = c.incoming else { return }
+      // write() also refuses bytes beyond the size the CLIP announced.
       if !clip.write(bytes) {
         clip.abort()
         c.incoming = nil
+        sentTriggers[clip.id] = nil
         host?.peerError(code: "E_PEER_CLIP", message: "Couldn't save the second camera's clip.")
       }
     case let .done(id):
       guard let clip = c.incoming else { return }
       c.incoming = nil
-      switch clip.finish(hello: c.hello, syncMs: triggerSyncMs.removeValue(forKey: id)) {
+      guard id == clip.id else {
+        clip.abort()
+        sentTriggers[clip.id] = nil
+        host?.peerError(code: "E_PEER_CLIP", message: "The second camera's clip didn't arrive in full.")
+        return
+      }
+      switch clip.finish(hello: c.hello, syncMs: sentTriggers.removeValue(forKey: id)?.syncMs) {
       case .saved:
         host?.peerAngleReady(id: id)
       case .incomplete:
@@ -564,6 +718,11 @@ final class PeerLink {
 
     func write(_ data: Data) -> Bool {
       guard let handle else { return false }
+      // More than announced: a broken or hostile peer. Stop before it fills the disk.
+      guard Int64(data.count) <= size - received else {
+        NSLog("SwingPeerLink: clip \(id) is bigger than its \(size) bytes; aborted")
+        return false
+      }
       do {
         try handle.write(contentsOf: data)
       } catch {
@@ -627,6 +786,10 @@ final class PeerLink {
     let nw: NWConnection
     let sync = ClockSync()
     var lastHeard = ProcessInfo.processInfo.systemUptime
+    /// Outgoing (main role) connections are; incoming ones once their HELLO had the right code.
+    var authenticated = false
+    /// A REJECT is on its way and the connection closes after it: ignore anything more it sends.
+    var refused = false
     var hello: Hello?
     var peerState: String?
     /// Camera role: the main phone's sync uncertainty, from its pings.

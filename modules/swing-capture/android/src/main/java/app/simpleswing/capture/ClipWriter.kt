@@ -22,7 +22,12 @@ data class WrittenClip(
   val anchorOffsetUs: Long,
 )
 
-/** Muxes ring-buffer snapshots into an MP4 and grabs a thumbnail. Runs on the export thread. */
+/**
+ * Muxes ring-buffer snapshots into an MP4 and grabs a thumbnail. Runs on the export thread.
+ *
+ * Every file is written as `<name>.part` and renamed once complete, so a full disk or a killed app
+ * never leaves a half-written clip (or a broken export that later calls would serve from cache).
+ */
 object ClipWriter {
   fun write(
     file: File,
@@ -40,6 +45,23 @@ object ClipWriter {
     val endUs = video.last().ptsUs
     val clipAudio = if (audioFormat == null) emptyList() else audio.filter { it.ptsUs in startUs..endUs }
 
+    atomically(file) { part -> mux(part, videoFormat, video, audioFormat, clipAudio, orientationDegrees, startUs) }
+
+    val impactOffsetUs = impactUs?.let { (it - startUs).coerceIn(0, endUs - startUs) }
+    val thumbAtUs = impactOffsetUs ?: ((endUs - startUs) / 2)
+    val thumb = if (thumbnail) writeThumbnail(file, thumbAtUs, orientationDegrees) else null
+    return WrittenClip(file, thumb, endUs - startUs, impactOffsetUs, anchorUs - startUs)
+  }
+
+  private fun mux(
+    file: File,
+    videoFormat: MediaFormat,
+    video: List<EncodedSample>,
+    audioFormat: MediaFormat?,
+    clipAudio: List<EncodedSample>,
+    orientationDegrees: Int,
+    startUs: Long,
+  ) {
     val muxer = MediaMuxer(file.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     try {
       muxer.setOrientationHint(orientationDegrees)
@@ -67,11 +89,25 @@ object ClipWriter {
     } finally {
       muxer.release()
     }
+  }
 
-    val impactOffsetUs = impactUs?.let { (it - startUs).coerceIn(0, endUs - startUs) }
-    val thumbAtUs = impactOffsetUs ?: ((endUs - startUs) / 2)
-    val thumb = if (thumbnail) writeThumbnail(file, thumbAtUs, orientationDegrees) else null
-    return WrittenClip(file, thumb, endUs - startUs, impactOffsetUs, anchorUs - startUs)
+  /** Runs [write] on `<file>.part`, then moves it into place; on any failure nothing is left behind. */
+  fun atomically(file: File, write: (File) -> Unit) {
+    val part = File(file.parentFile, file.name + ".part")
+    try {
+      write(part)
+      if (!part.renameTo(file)) throw java.io.IOException("Couldn't move ${part.name} into place")
+    } catch (e: Throwable) {
+      part.delete()
+      throw e
+    }
+  }
+
+  /** Fails early, with a message people understand, when there's no room for another clip. */
+  fun ensureSpace(dir: File) {
+    if (dir.usableSpace < MIN_FREE_BYTES) {
+      throw CaptureException("E_STORAGE", "Phone storage is full. Free some space (or delete old swings) to keep saving.")
+    }
   }
 
   /**
@@ -79,6 +115,11 @@ object ClipWriter {
    * and messaging apps show it in slow motion: 120 fps x4 plays back at 30 fps. No re-encode.
    */
   fun retime(src: File, dst: File, factor: Int) {
+    require(factor in 1..16) { "Slow-motion factor $factor out of range" }
+    atomically(dst) { part -> retimeInto(src, part, factor) }
+  }
+
+  private fun retimeInto(src: File, dst: File, factor: Int) {
     val extractor = MediaExtractor()
     try {
       extractor.setDataSource(src.path)
@@ -151,4 +192,5 @@ object ClipWriter {
   }
 
   private const val THUMB_WIDTH = 360
+  private const val MIN_FREE_BYTES = 100L * 1024 * 1024
 }

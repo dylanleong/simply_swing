@@ -8,9 +8,10 @@ import type { DrawTool } from '@/components/drawing-overlay';
 import type { IconName } from '@/components/icon';
 import { IconButton } from '@/components/icon-button';
 import { ModeBar } from '@/components/mode-bar';
+import { leaveToLibrary, SwingNotFound } from '@/components/swing-not-found';
 import { Sheet, SheetRow } from '@/components/sheet';
 import { ClubPicker, ResultChips } from '@/components/shot-tags';
-import { ThemedText } from '@/components/themed-text';
+import { MaxFontScale, ThemedText } from '@/components/themed-text';
 import { Transport } from '@/components/transport';
 import { VideoPane } from '@/components/video-pane';
 import { Spacing } from '@/constants/theme';
@@ -20,6 +21,7 @@ import { angleLabels, angleLink, exportSource, formatSync, nudgeStepMs, type Rev
 import { saveSwingToPhotos, shareSwing } from '@/lib/swing-export';
 import { formatClipTime, formatTempo, type Angle, type Swing } from '@/lib/swing-library';
 import type { Drawings, Shape, SwingNotes } from '@/lib/swing-notes';
+import { alertDeleteFailed, alertSaveFailed } from '@/lib/storage-alert';
 import { deleteSwing, getSwing, setAngleNudge, updateSwingNotes } from '@/lib/swing-store';
 import SwingCapture from '../../../modules/swing-capture';
 
@@ -39,6 +41,8 @@ const TOOLS: { value: DrawTool; label: string; icon: IconName; hint: string }[] 
 
 /** The tray between the transport and the mode bar never changes height, so nothing above it moves. */
 const TRAY_HEIGHT = 152;
+/** Text in the dock grows with the system font size up to this, which still fits TRAY_HEIGHT. */
+const DOCK_MAX_FONT_SCALE = 1.3;
 const NOTICE_MS = 3500;
 const STAR = '#FFC83D';
 
@@ -54,13 +58,7 @@ export default function SwingReviewScreen() {
     return () => sub.remove();
   }, [id]);
 
-  if (!swing) {
-    return (
-      <SafeAreaView style={styles.missing}>
-        <ThemedText>This swing no longer exists.</ThemedText>
-      </SafeAreaView>
-    );
-  }
+  if (!swing) return <SwingNotFound />;
   // Fresh players when the angle arrives (a player's source is fixed when it's created).
   return <Review key={swing.angle?.uri ?? 'single'} swing={swing} />;
 }
@@ -79,10 +77,14 @@ function Review({ swing }: { swing: Swing }) {
   const [sheet, setSheet] = useState<'menu' | 'align' | 'club' | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** A Save / Share export is running; a second tap would start another. */
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
 
   const angle: Angle | null = useMemo(() => (swing.angle ? { ...swing.angle, nudgeMs } : null), [swing.angle, nudgeMs]);
   const link = useMemo(() => (angle ? angleLink(swing, angle) : null), [angle, swing]);
-  const { player, playerB, isPlaying, rate, position, pause, showAt, togglePlay, step, changeRate } = useLinkedPlayers(
+  const { player, playerB, isPlaying, rate, position, failed, failedB, pause, showAt, togglePlay, step, changeRate } =
+    useLinkedPlayers(
     swing.uri,
     swing.angle?.uri ?? null,
     link
@@ -101,7 +103,11 @@ function Review({ swing }: { swing: Swing }) {
     if (!sticky) noticeTimer.current = setTimeout(() => setNotice(null), NOTICE_MS);
   };
 
-  const saveNotes = (patch: Partial<SwingNotes>) => setNotes(updateSwingNotes(swing.id, patch));
+  const saveNotes = (patch: Partial<SwingNotes>) => {
+    const next = updateSwingNotes(swing.id, patch);
+    if (next) setNotes(next);
+    else alertSaveFailed();
+  };
 
   const addShape = (clip: keyof Drawings) => (shape: Shape) => {
     saveNotes({ drawings: { ...notes.drawings, [clip]: [...notes.drawings[clip], shape] } });
@@ -150,7 +156,7 @@ function Review({ swing }: { swing: Swing }) {
     if (!angle) return;
     const next = frames == null ? 0 : Math.round((nudgeMs + frames * nudgeStepMs(angle.fps)) * 100) / 100;
     setNudgeMs(next);
-    setAngleNudge(swing.id, next);
+    if (!setAngleNudge(swing.id, next)) alertSaveFailed();
     // Stay on this frame of the main clip; re-seek the angle with the new alignment.
     showAt(player.currentTime, angleLink(swing, { ...angle, nudgeMs: next }));
   };
@@ -160,6 +166,9 @@ function Review({ swing }: { swing: Swing }) {
 
   const run = async (kind: 'save' | 'share') => {
     setSheet(null);
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
     pause();
     say(kind === 'save' ? 'Saving to your gallery…' : 'Preparing…', true);
     try {
@@ -172,6 +181,9 @@ function Review({ swing }: { swing: Swing }) {
       }
     } catch (e) {
       say((e as Error).message);
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
     }
   };
 
@@ -184,8 +196,11 @@ function Review({ swing }: { swing: Swing }) {
         style: 'destructive',
         onPress: () => {
           pause();
-          deleteSwing(swing.id);
-          router.back();
+          if (!deleteSwing(swing.id)) {
+            alertDeleteFailed();
+            return;
+          }
+          leaveToLibrary();
         },
       },
     ]);
@@ -233,6 +248,8 @@ function Review({ swing }: { swing: Swing }) {
             shapes={notes.drawings.a}
             tool={drawing}
             onAddShape={addShape('a')}
+            failed={failed}
+            failedAction={{ label: 'Delete swing', onPress: confirmDelete }}
           />
         )}
         {showB && (
@@ -246,6 +263,7 @@ function Review({ swing }: { swing: Swing }) {
             shapes={notes.drawings.b}
             tool={drawing}
             onAddShape={addShape('b')}
+            failed={failedB}
           />
         )}
         {notice && (
@@ -255,86 +273,90 @@ function Review({ swing }: { swing: Swing }) {
         )}
       </View>
 
-      <SafeAreaView edges={['bottom']} style={[styles.dock, { backgroundColor: theme.background }]}>
-        <View style={styles.padded}>
-          <Transport
-            duration={duration}
-            position={position}
-            impact={impact}
-            isPlaying={isPlaying}
-            rate={rate}
-            onSeek={(t) => showAt(t)}
-            onTogglePlay={togglePlay}
-            onStep={(frames) => step(frames, swing.fps)}
-            onRate={changeRate}
-            onPause={pause}
-          />
-        </View>
+      <MaxFontScale.Provider value={DOCK_MAX_FONT_SCALE}>
+        <SafeAreaView edges={['bottom']} style={[styles.dock, { backgroundColor: theme.background }]}>
+          <View style={styles.padded}>
+            <Transport
+              duration={duration}
+              position={position}
+              impact={impact}
+              isPlaying={isPlaying}
+              rate={rate}
+              onSeek={(t) => showAt(t)}
+              onTogglePlay={togglePlay}
+              onStep={(frames) => step(frames, swing.fps)}
+              onRate={changeRate}
+              onPause={pause}
+            />
+          </View>
 
-        <View style={[styles.tray, styles.padded]}>
-          {mode === 'tag' ? (
-            <>
-              <ResultChips value={notes.result} onChange={(result) => saveNotes({ result })} />
-              <View style={styles.trayFooter}>
-                <Chip
-                  size="sm"
-                  icon="mci:golf"
-                  label={notes.club ?? 'Club'}
-                  accessibilityLabel={notes.club ? `Club ${notes.club}. Change` : 'Choose club'}
-                  onPress={() => setSheet('club')}
-                />
-                <ThemedText type="small" themeColor="textSecondary" numberOfLines={1} style={styles.flex}>
-                  {swing.tempo ? formatTempo(swing.tempo) : ''}
-                </ThemedText>
-              </View>
-            </>
-          ) : (
-            <>
-              <View style={styles.row}>
-                {TOOLS.map((t) => (
+          <View style={[styles.tray, styles.padded]}>
+            {mode === 'tag' ? (
+              <>
+                <ResultChips value={notes.result} onChange={(result) => saveNotes({ result })} />
+                <View style={styles.trayFooter}>
                   <Chip
-                    key={t.value}
-                    variant="option"
-                    fill
-                    icon={t.icon}
-                    label={t.label}
-                    selected={tool === t.value}
-                    onPress={() => pickTool(t.value)}
+                    size="sm"
+                    icon="mci:golf"
+                    label={notes.club ?? 'Club'}
+                    accessibilityLabel={notes.club ? `Club ${notes.club}. Change` : 'Choose club'}
+                    onPress={() => setSheet('club')}
                   />
-                ))}
-              </View>
-              <View style={styles.row}>
-                <Chip size="sm" icon="ion:arrow-undo-outline" label="Undo" onPress={undo} />
-                {drawingCount > 0 && <Chip size="sm" variant="danger" label="Clear all" onPress={clearDrawings} />}
-                <View style={styles.flex} />
-                <IconButton
-                  icon="ion:help-circle-outline"
-                  accessibilityLabel="What to look for"
-                  size={36}
-                  onPress={() => go('/help', { topic: 'reading' })}
-                />
-              </View>
-              <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
-                {toolHint ?? 'Pick a tool, then draw on the video.'}
-              </ThemedText>
-            </>
-          )}
-        </View>
+                  <ThemedText type="small" themeColor="textSecondary" numberOfLines={1} style={styles.flex}>
+                    {swing.tempo ? formatTempo(swing.tempo) : ''}
+                  </ThemedText>
+                </View>
+              </>
+            ) : (
+              <>
+                <View style={styles.row}>
+                  {TOOLS.map((t) => (
+                    <Chip
+                      key={t.value}
+                      variant="option"
+                      fill
+                      icon={t.icon}
+                      label={t.label}
+                      selected={tool === t.value}
+                      onPress={() => pickTool(t.value)}
+                    />
+                  ))}
+                </View>
+                <View style={styles.row}>
+                  <Chip size="sm" icon="ion:arrow-undo-outline" label="Undo" onPress={undo} />
+                  {drawingCount > 0 && <Chip size="sm" variant="danger" label="Clear all" onPress={clearDrawings} />}
+                  <View style={styles.flex} />
+                  <IconButton
+                    icon="ion:help-circle-outline"
+                    accessibilityLabel="What to look for"
+                    size={36}
+                    onPress={() => go('/help', { topic: 'reading' })}
+                  />
+                </View>
+                <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+                  {toolHint ?? 'Pick a tool, then draw on the video.'}
+                </ThemedText>
+              </>
+            )}
+          </View>
 
-        <ModeBar modes={MODES} value={mode} onChange={changeMode} />
-      </SafeAreaView>
+          <ModeBar modes={MODES} value={mode} onChange={changeMode} />
+        </SafeAreaView>
+      </MaxFontScale.Provider>
 
       <Sheet visible={sheet === 'menu'} onClose={() => setSheet(null)}>
         <SheetRow
           icon="ion:download-outline"
           label="Save to Photos"
-          detail={source.angle ? 'Side by side' : undefined}
+          detail={busy ? 'Working…' : source.angle ? 'Side by side' : undefined}
+          disabled={busy || failed}
           onPress={() => run('save')}
         />
-        <SheetRow icon="ion:share-outline" label="Share" onPress={() => run('share')} />
+        <SheetRow icon="ion:share-outline" label="Share" disabled={busy || failed} onPress={() => run('share')} />
         <SheetRow
           icon="ion:git-compare-outline"
           label="Compare with another swing"
+          disabled={busy || failed}
           onPress={() => go('/compare-pick', { a: swing.id })}
         />
         {angle && (
@@ -405,5 +427,4 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   sheetBody: { paddingHorizontal: Spacing.four, gap: Spacing.three, paddingBottom: Spacing.two },
   syncText: { minWidth: 96, textAlign: 'center', fontWeight: '600' },
-  missing: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 });

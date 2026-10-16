@@ -1,3 +1,4 @@
+import { createContext, useContext } from 'react';
 import { Platform, StyleSheet, Text, type TextProps } from 'react-native';
 
 import { Fonts, ThemeColor } from '@/constants/theme';
@@ -8,11 +9,19 @@ export type ThemedTextProps = TextProps & {
   themeColor?: ThemeColor;
 };
 
+/**
+ * Caps how far the system text size scales the text inside (a fixed-height dock or a control of a
+ * fixed size), so large fonts grow it without clipping. Unset = no cap.
+ */
+export const MaxFontScale = createContext<number | undefined>(undefined);
+
 export function ThemedText({ style, type = 'default', themeColor, ...rest }: ThemedTextProps) {
   const theme = useTheme();
+  const maxFontScale = useContext(MaxFontScale);
 
   return (
     <Text
+      maxFontSizeMultiplier={maxFontScale}
       style={[
         { color: theme[themeColor ?? 'text'] },
         type === 'default' && styles.default,

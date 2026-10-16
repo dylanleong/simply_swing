@@ -1,3 +1,4 @@
+import AVFoundation
 import ExpoModulesCore
 
 /// What fired a capture. Auto sources count against the free-tier quota (mirrors TriggerSource in TS).
@@ -30,6 +31,17 @@ struct NormalizedRoi: Equatable {
   var height: Double
 
   static let `default` = NormalizedRoi(x: 0.25, y: 0.1, width: 0.5, height: 0.85)
+  /// Smallest box side MotionGate measures (fraction of the frame).
+  static let minSide = 0.02
+
+  /// Inside the frame and at least `minSide` across; the default box if any value isn't finite.
+  /// MotionGate turns these into pixel indices, where NaN or infinity would trap.
+  func sanitized() -> NormalizedRoi {
+    guard x.isFinite, y.isFinite, width.isFinite, height.isFinite else { return .default }
+    let w = min(max(width, Self.minSide), 1)
+    let h = min(max(height, Self.minSide), 1)
+    return NormalizedRoi(x: min(max(x, 0), 1 - w), y: min(max(y, 0), 1 - h), width: w, height: h)
+  }
 }
 
 struct RoiRecord: Record {
@@ -39,7 +51,7 @@ struct RoiRecord: Record {
   @Field var height: Double = 0.85
 
   func toRoi() -> NormalizedRoi {
-    NormalizedRoi(x: x, y: y, width: width, height: height)
+    NormalizedRoi(x: x, y: y, width: width, height: height).sanitized()
   }
 }
 
@@ -57,18 +69,25 @@ struct CaptureConfigRecord: Record {
   /// Apple Watch support is Phase 6; accepted so the shared JS config decodes on iOS.
   @Field var watchMode: String = "auto"
   @Field var savePracticeSwings: Bool = false
+  /// Chime when a swing is saved (main / solo phone only). Older JS without the field gets it on.
+  @Field var savedSound: Bool = true
 
+  /// Times become dispatch deadlines and buffer sizes, which trap or misbehave on NaN / huge values.
   func toConfig() -> CaptureConfig {
-    CaptureConfig(
-      fps: fps,
-      preRoll: preRollSec,
-      postRoll: postRollSec,
-      lookback: lookbackSec,
+    func seconds(_ value: Double, _ fallback: Double, max upper: Double) -> Double {
+      value.isFinite ? min(max(value, 0), upper) : fallback
+    }
+    return CaptureConfig(
+      fps: min(max(fps, 1), 480),
+      preRoll: seconds(preRollSec, 3, max: 30),
+      postRoll: seconds(postRollSec, 1.5, max: 30),
+      lookback: seconds(lookbackSec, 6, max: 30),
       roi: roi.toRoi(),
-      sensitivity: sensitivity,
+      sensitivity: sensitivity.isFinite ? min(max(sensitivity, 0), 1) : 0.5,
       sharpMode: sharpMode,
       autoTrigger: autoTrigger,
-      impactTrigger: impactTrigger
+      impactTrigger: impactTrigger,
+      savedSound: savedSound
     )
   }
 }
@@ -84,6 +103,7 @@ struct CaptureConfig {
   var sharpMode: Bool
   var autoTrigger: Bool
   var impactTrigger: Bool
+  var savedSound: Bool
 }
 
 /// Which span of the rolling buffer becomes the saved clip. Times are capture-clock seconds.
@@ -125,6 +145,39 @@ enum SwingFiles {
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     return dir
   }()
+
+  /// `tmp/exports`: slow-motion and side-by-side copies for Save / Share, reused while up to date.
+  static var exportsDir: URL {
+    FileManager.default.temporaryDirectory.appendingPathComponent("exports", isDirectory: true)
+  }
+}
+
+enum Storage {
+  static let fullCode = "E_STORAGE"
+  static let fullMessage = "Phone storage is full. Free some space to keep recording."
+  /// Below this much free space a failed write is put down to a full disk.
+  private static let lowBytes = 50 * 1024 * 1024
+
+  /// Did [error] (a writer's or export session's) come from running out of space? Checks the usual
+  /// codes, then the volume itself, since AVFoundation often reports a full disk as a generic failure.
+  static func isFull(_ error: Error?, at url: URL) -> Bool {
+    if let error, matches(error as NSError) { return true }
+    let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey])
+    if let free = values?.volumeAvailableCapacity, free < lowBytes { return true }
+    return false
+  }
+
+  private static func matches(_ e: NSError) -> Bool {
+    if e.domain == AVFoundationErrorDomain && e.code == AVError.Code.diskFull.rawValue { return true }
+    if e.domain == NSCocoaErrorDomain && e.code == NSFileWriteOutOfSpaceError { return true }
+    if e.domain == NSPOSIXErrorDomain && e.code == Int(ENOSPC) { return true }
+    if let underlying = e.userInfo[NSUnderlyingErrorKey] as? NSError { return matches(underlying) }
+    return false
+  }
+}
+
+final class StorageFullException: Exception {
+  override var reason: String { Storage.fullMessage }
 }
 
 final class CaptureException: GenericException<String> {

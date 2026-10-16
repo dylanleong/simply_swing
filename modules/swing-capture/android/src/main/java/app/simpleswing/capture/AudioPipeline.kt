@@ -77,7 +77,10 @@ class AudioPipeline(
       var lastPtsUs = Long.MIN_VALUE
       while (running) {
         val n = record.read(pcm, 0, pcm.size)
-        if (n <= 0) continue
+        // A negative count is a dead microphone (e.g. the audio server restarted): spinning on it
+        // would burn the CPU with impact detection silently gone, so stop and report it instead.
+        if (n < 0) throw CaptureException("E_AUDIO", "The microphone stopped working. Leave and reopen Capture.")
+        if (n == 0) continue
         val ptsNs = if (record.getTimestamp(ts, clock.audioTimebase) == AudioRecord.SUCCESS) {
           ts.nanoTime + (framesRead - ts.framePosition) * 1_000_000_000L / SAMPLE_RATE
         } else {

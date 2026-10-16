@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Segmented } from '@/components/segmented';
@@ -18,7 +18,7 @@ import {
   type Sensitivity,
 } from '@/lib/capture-settings';
 import { loadCaptureSettings, saveCaptureSettings } from '@/lib/capture-settings-store';
-import { formatBytes } from '@/lib/swing-library';
+import { formatBytes, pruneQuestion, swingsToPrune } from '@/lib/swing-library';
 import { listSwings, pruneOldSwings } from '@/lib/swing-store';
 import SwingCapture from '../../../modules/swing-capture';
 
@@ -58,6 +58,19 @@ export default function SettingsScreen() {
       pruneOldSwings(next.autoDeleteDays);
       refreshStorage();
     }
+  };
+
+  /** A shorter period can delete a lot of swings at once: say how many first. */
+  const changeAutoDelete = (autoDeleteDays: CaptureSettings['autoDeleteDays']) => {
+    const doomed = swingsToPrune(listSwings(), autoDeleteDays).length;
+    if (doomed === 0) {
+      update({ autoDeleteDays });
+      return;
+    }
+    Alert.alert(pruneQuestion(doomed, autoDeleteDays), 'This removes them from your phone.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => update({ autoDeleteDays }) },
+    ]);
   };
 
   // The camera picks the best rate it can sustain, so unsupported choices are shown but disabled.
@@ -119,6 +132,12 @@ export default function SettingsScreen() {
                   { value: 'high', label: 'High' },
                 ]}
               />
+            </Setting>
+            <Setting
+              inline
+              label="Sound when saved"
+              help="A soft chime when a swing is saved, so you know it caught the shot. Follows your phone's silent switch.">
+              <Switch value={settings.savedSound} onValueChange={(savedSound) => update({ savedSound })} />
             </Setting>
           </Section>
 
@@ -193,7 +212,7 @@ export default function SettingsScreen() {
               <Segmented
                 accessibilityLabel="Delete swings older than"
                 value={settings.autoDeleteDays}
-                onChange={(autoDeleteDays) => update({ autoDeleteDays })}
+                onChange={changeAutoDelete}
                 options={AUTO_DELETE_OPTIONS.map((d) => ({ value: d, label: d === 0 ? 'Never' : `${d} days` }))}
               />
             </Setting>

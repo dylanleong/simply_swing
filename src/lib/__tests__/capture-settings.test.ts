@@ -1,4 +1,11 @@
-import { clampRoi, DEFAULT_SETTINGS, MIN_ROI_SIZE, parseSettings } from '../capture-settings';
+import {
+  clampRoi,
+  DEFAULT_SETTINGS,
+  isPairingCode,
+  MIN_ROI_SIZE,
+  pairingCodeDigits,
+  parseSettings,
+} from '../capture-settings';
 
 describe('parseSettings', () => {
   it('uses defaults when nothing is stored or the file is corrupt', () => {
@@ -24,8 +31,10 @@ describe('parseSettings', () => {
       savePracticeSwings: true,
       secondCamera: true,
       lastCameraName: 'Pixel 8',
+      lastCameraCode: '048291',
       cameraView: 'dtl',
       club: '7i',
+      savedSound: false,
     };
     expect(parseSettings(JSON.stringify(stored))).toEqual(stored);
   });
@@ -39,7 +48,9 @@ describe('parseSettings', () => {
         fps: 1000,
         sensitivity: 'max',
         lastCameraName: 7,
+        lastCameraCode: '12345',
         cameraView: 'overhead',
+        savedSound: 'loud',
       })
     );
     expect(s.roi).toEqual(DEFAULT_SETTINGS.roi);
@@ -49,6 +60,12 @@ describe('parseSettings', () => {
     expect(s.sensitivity).toBe(DEFAULT_SETTINGS.sensitivity);
     expect(s.lastCameraName).toBeNull();
     expect(s.cameraView).toBe(DEFAULT_SETTINGS.cameraView);
+    expect(s.lastCameraCode).toBeNull();
+    expect(s.savedSound).toBe(true);
+  });
+
+  it('chimes on save by default', () => {
+    expect(DEFAULT_SETTINGS.savedSound).toBe(true);
   });
 
   it('upgrades settings saved by older versions', () => {
@@ -74,5 +91,22 @@ describe('clampRoi', () => {
     expect(r.width).toBe(MIN_ROI_SIZE);
     expect(r.height).toBe(1);
     expect(r.y).toBe(0);
+  });
+});
+
+describe('pairing codes', () => {
+  it('accepts exactly six digits', () => {
+    expect(isPairingCode('482913')).toBe(true);
+    expect(isPairingCode('000123')).toBe(true);
+    expect(isPairingCode('48291')).toBe(false);
+    expect(isPairingCode('4829134')).toBe(false);
+    expect(isPairingCode('48291a')).toBe(false);
+    expect(isPairingCode(482913)).toBe(false);
+  });
+
+  it('keeps only the digits the user typed', () => {
+    expect(pairingCodeDigits('482 913')).toBe('482913');
+    expect(pairingCodeDigits('482-9135')).toBe('482913');
+    expect(pairingCodeDigits('abc')).toBe('');
   });
 });

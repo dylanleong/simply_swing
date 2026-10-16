@@ -44,8 +44,11 @@ declare class SwingCaptureModule extends NativeModule<SwingCaptureModuleEvents> 
   exportSideBySideAsync(uri: string, angleUri: string, shiftMs: number, factor: number): Promise<string>;
   /** Main phone: look for camera phones (reported via `onPeersFound`) and reconnect to the last one. */
   startMainLink(): void;
-  /** Main phone: connect to a found camera (`PeerInfo.id`) or a typed `host:port` / `host`. */
-  connectPeer(idOrAddress: string): void;
+  /**
+   * Main phone: connect to a found camera (`PeerInfo.id`) or a typed `host:port` / `host`, using the
+   * pairing [code] the camera phone shows. A wrong code reports `E_PEER_CODE` and stops retrying.
+   */
+  connectPeer(idOrAddress: string, code: string): void;
   /**
    * Become a camera phone: advertise on the local network and save whatever the main phone triggers.
    * Local triggers (impact sound, buttons, watch) are ignored while in this role.

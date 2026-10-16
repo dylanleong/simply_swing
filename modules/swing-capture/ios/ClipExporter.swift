@@ -33,6 +33,7 @@ enum ClipExporter {
     for chunk in chunks {
       let asset = AVURLAsset(url: chunk.url)
       let duration = try await asset.load(.duration)
+      guard duration.isNumeric, duration > .zero else { continue }
       let range = CMTimeRange(start: .zero, duration: duration)
       if let src = try await asset.loadTracks(withMediaType: .video).first {
         try videoTrack.insertTimeRange(range, of: src, at: cursor)
@@ -48,19 +49,16 @@ enum ClipExporter {
     let total = cursor.seconds
     let startOffset = min(max(0, window.start - first.start), total)
     let endOffset = min(max(startOffset, window.end - first.start), total)
-    try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try? FileManager.default.removeItem(at: output)
 
     guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
       throw CaptureException("Could not create export session")
     }
-    session.outputURL = output
     session.outputFileType = .mp4
     session.timeRange = CMTimeRange(
       start: CMTime(seconds: startOffset, preferredTimescale: 600),
       end: CMTime(seconds: endOffset, preferredTimescale: 600)
     )
-    try await run(session)
+    try await run(session, to: output)
 
     let duration = endOffset - startOffset
     let impactOffset = window.impact.map { min(max(0, $0 - first.start - startOffset), duration) }
@@ -82,11 +80,18 @@ enum ClipExporter {
       json[key] = value ?? NSNull()
     }
     guard let data = try? JSONSerialization.data(withJSONObject: json) else { return }
-    try? data.write(to: clip.deletingPathExtension().appendingPathExtension("json"))
+    try? data.write(to: clip.deletingPathExtension().appendingPathExtension("json"), options: .atomic)
+  }
+
+  /// Slow-motion factors the exporters accept. Anything else (0 or negative especially) would make
+  /// an invalid or trapping time scale (`Int32(factor)`, a division by it).
+  static func checkSlowMotionFactor(_ factor: Int) throws {
+    guard (1...32).contains(factor) else { throw CaptureException("Slow-motion factor must be 1 to 32, not \(factor)") }
   }
 
   /// Copy retimed [factor]x slower (video only) so any player shows it in slow motion.
   static func exportSlowMotion(source: URL, factor: Int, to output: URL) async throws {
+    try checkSlowMotionFactor(factor)
     let asset = AVURLAsset(url: source)
     guard let src = try await asset.loadTracks(withMediaType: .video).first else {
       throw CaptureException("No video track in \(source.lastPathComponent)")
@@ -100,20 +105,22 @@ enum ClipExporter {
     track.scaleTimeRange(range, toDuration: CMTimeMultiply(duration, multiplier: Int32(factor)))
     track.preferredTransform = try await src.load(.preferredTransform)
 
+    // A stale copy must not be served if this export fails.
     try? FileManager.default.removeItem(at: output)
     // Re-encode: a retimed passthrough isn't honoured by every player / messaging app.
     guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
       throw CaptureException("Could not create export session")
     }
-    session.outputURL = output
     session.outputFileType = .mp4
-    try await run(session)
+    try await run(session, to: output)
   }
 
   /// A two-angle swing as one slow-motion video: [main] on the left, [angle] on the right, the angle
   /// shown at `tA + shiftSec`. Video only, like `exportSlowMotion`. Before the angle starts (or
   /// after it ends) its half is black.
   static func exportSideBySide(main: URL, angle: URL, shiftSec: Double, factor: Int, to output: URL) async throws {
+    try checkSlowMotionFactor(factor)
+    guard shiftSec.isFinite else { throw CaptureException("Bad angle shift") }
     let mainAsset = AVURLAsset(url: main)
     let angleAsset = AVURLAsset(url: angle)
     guard let srcA = try await mainAsset.loadTracks(withMediaType: .video).first,
@@ -162,9 +169,8 @@ enum ClipExporter {
       throw CaptureException("Could not create export session")
     }
     session.videoComposition = videoComposition
-    session.outputURL = output
     session.outputFileType = .mp4
-    try await run(session)
+    try await run(session, to: output)
   }
 
   /// Shows [track] upright, scaled to fit inside [rect] and centred in it.
@@ -180,12 +186,34 @@ enum ClipExporter {
       .concatenating(CGAffineTransform(translationX: rect.minX + (rect.width - w) / 2, y: rect.minY + (rect.height - h) / 2))
   }
 
-  private static func run(_ session: AVAssetExportSession) async throws {
-    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-      session.exportAsynchronously { continuation.resume() }
-    }
-    if session.status != .completed {
-      throw CaptureException(session.error?.localizedDescription ?? "Export failed")
+  /// Where exports are written until they're complete (`tmp/partial`, cleaned at engine start).
+  static var partialDir: URL {
+    FileManager.default.temporaryDirectory.appendingPathComponent("partial", isDirectory: true)
+  }
+
+  /// Runs [session] into a temporary file and moves it to [output] only once it's complete, so a
+  /// failed or interrupted export never leaves a truncated clip in the library or the export cache.
+  private static func run(_ session: AVAssetExportSession, to output: URL) async throws {
+    let fm = FileManager.default
+    try fm.createDirectory(at: partialDir, withIntermediateDirectories: true)
+    try fm.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
+    // Keeps the real file's extension, which the export session may check against outputFileType.
+    let part = partialDir.appendingPathComponent("\(UUID().uuidString).\(output.pathExtension)")
+    session.outputURL = part
+    do {
+      await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        session.exportAsynchronously { continuation.resume() }
+      }
+      if session.status != .completed {
+        let error = session.error
+        if Storage.isFull(error, at: partialDir) { throw StorageFullException() }
+        throw CaptureException(error?.localizedDescription ?? "Export failed")
+      }
+      try? fm.removeItem(at: output)
+      try fm.moveItem(at: part, to: output)
+    } catch {
+      try? fm.removeItem(at: part)
+      throw error
     }
   }
 
@@ -200,7 +228,7 @@ enum ClipExporter {
       let (image, _) = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600))
       guard let data = UIImage(cgImage: image).jpegData(compressionQuality: 0.8) else { return nil }
       let url = clip.deletingPathExtension().appendingPathExtension("jpg")
-      try data.write(to: url)
+      try data.write(to: url, options: .atomic)
       return url
     } catch {
       return nil

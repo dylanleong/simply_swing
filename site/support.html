@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>SimpleSwing Support</title>
+<meta name="description" content="Help with SimpleSwing: setup, missed shots, second phone, watch and storage.">
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f4f6f4; --text: #18201b; --muted: #55605a;
+    --border: #dfe5e0; --accent: #146B3A; --accent-soft: #e5f2ea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1411; --surface: #18201b; --text: #e8ede9; --muted: #a2ada6;
+      --border: #2a352e; --accent: #4cc27f; --accent-soft: #16301f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+  nav { display: flex; gap: 20px; align-items: center; margin-bottom: 32px; font-size: 15px; flex-wrap: wrap; }
+  nav .brand { font-weight: 700; color: var(--text); text-decoration: none; margin-right: auto; }
+  a { color: var(--accent); }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 8px; }
+  h2 { font-size: 21px; margin: 40px 0 12px; }
+  p, ul, ol { margin: 0 0 14px; }
+  ul, ol { padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  .lead { color: var(--muted); margin-bottom: 24px; }
+  .contact {
+    background: var(--accent-soft); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px 18px; margin: 0 0 8px;
+  }
+  .contact p:last-child { margin-bottom: 0; }
+  details { border: 1px solid var(--border); border-radius: 10px; margin: 0 0 10px; background: var(--surface); }
+  summary { cursor: pointer; padding: 12px 16px; font-weight: 600; list-style-position: outside; }
+  details[open] summary { border-bottom: 1px solid var(--border); }
+  details > div { padding: 12px 16px 2px; }
+  footer { margin-top: 48px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--border); padding-top: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="brand" href="index.html">SimpleSwing</a>
+    <a href="privacy.html">Privacy</a>
+    <a href="support.html" aria-current="page">Support</a>
+  </nav>
+
+  <h1>Support</h1>
+  <p class="lead">Answers to common questions. The app's own Help screen (Settings → Help) has more, and it works offline.</p>
+
+  <div class="contact">
+    <p><strong>Still stuck?</strong> Email [contact email]. Please include:</p>
+    <ul>
+      <li>your phone (and watch) model and its iOS, Android or Wear OS version,</li>
+      <li>the SimpleSwing version (shown in your app store's listing),</li>
+      <li>what you did, what you expected and what happened.</li>
+    </ul>
+    <p>SimpleSwing has no account and sends me nothing, so I can't see your swings or settings. A screenshot or a short screen recording helps a lot.</p>
+  </div>
+
+  <h2>Getting started</h2>
+  <details open>
+    <summary>What do I need?</summary>
+    <div>
+      <ul>
+        <li><strong>A tripod or stand for the phone.</strong> The app watches for movement where you stand, and a hand-held or wobbling phone confuses it.</li>
+        <li><strong>A recent phone.</strong> SimpleSwing records at 120 fps, or 240 fps where the phone supports it. On Android, high-speed recording depends on the phone model. Phones without it record at a lower frame rate.</li>
+        <li><strong>Optional:</strong> a second phone running SimpleSwing for a second angle, a Bluetooth camera remote, or (on Android) a Wear OS watch.</li>
+      </ul>
+    </div>
+  </details>
+  <details>
+    <summary>Where should I put the phone?</summary>
+    <div>
+      <p><strong>Down the line:</strong> about 3 m behind you, on a line through your hands parallel to the target line, at hand height, aimed at the target.</p>
+      <p><strong>Face on:</strong> about 3 m away, square to your chest, at hand to chest height.</p>
+      <p>Keep the phone upright and level (a bar appears at the top of the Capture screen when it's tilted), use the normal 1× camera, and fit your whole body and the club at the top in the frame. Outdoors, keep the sun behind or beside the camera.</p>
+    </div>
+  </details>
+  <details>
+    <summary>How does it save my swing on its own?</summary>
+    <div>
+      <p>The Capture screen keeps the last few seconds of video. When it hears a sharp impact sound and there was movement inside the golfer box just before it, it saves the swing and plays it back in slow motion. Drag the box so it covers where you stand and swing.</p>
+      <p>You can also save with the SAVE button, a volume button, a Bluetooth camera remote or the watch, right after you swing. They all keep the last few seconds (Settings → Clip length).</p>
+    </div>
+  </details>
+
+  <h2>Troubleshooting</h2>
+  <details>
+    <summary>My shot wasn't saved</summary>
+    <div>
+      <ul>
+        <li>Check AUTO is on.</li>
+        <li>Tap the status pill to open Levels. A shot needs movement in the golfer box just before it, and a sound loud enough.</li>
+        <li>Make the golfer box cover where you stand and swing.</li>
+        <li>If strikes read too quiet, raise Settings → Impact sensitivity.</li>
+        <li>You can always tap SAVE after a swing.</li>
+      </ul>
+    </div>
+  </details>
+  <details>
+    <summary>Someone else's shot was saved</summary>
+    <div>
+      <p>Shrink the golfer box so it covers only you, or lower Settings → Impact sensitivity. With a Wear OS watch set to Sense swings, only shots where your own wrist swung are saved.</p>
+    </div>
+  </details>
+  <details>
+    <summary>The video is dark, grainy or blurred</summary>
+    <div>
+      <p>Slow motion needs a lot of light. Record outdoors or in a bright room, and turn on Settings → Sharp mode in daylight for a crisp club.</p>
+    </div>
+  </details>
+  <details>
+    <summary>The phone gets hot</summary>
+    <div>
+      <p>Recording at high frame rates in direct sun warms the phone. SimpleSwing drops to 60 fps and tells you when that happens. Shade the phone, or choose 120 fps rather than 240. The screen dims between shots and the camera goes to standby when you step away, which saves battery.</p>
+    </div>
+  </details>
+  <details>
+    <summary>The app is using a lot of storage</summary>
+    <div>
+      <p>A swing is about 10–30 MB. Settings → Storage can delete old swings automatically. Favourites are never auto-deleted, and copies you saved to Photos aren't touched.</p>
+    </div>
+  </details>
+  <details>
+    <summary>Volume buttons don't save on my iPhone</summary>
+    <div>
+      <p>Saving with the volume buttons needs iOS 17.2 or later. Use the SAVE button on older versions.</p>
+    </div>
+  </details>
+
+  <h2>Second phone</h2>
+  <details>
+    <summary>How do I film a second angle?</summary>
+    <div>
+      <ol>
+        <li>Put both phones on the same Wi-Fi, or turn on one phone's hotspot and join it from the other.</li>
+        <li>On the second phone: Settings → Use this phone as the camera, and choose its view. It shows a 6-digit pairing code.</li>
+        <li>On your phone: tap + Cam on the Capture screen, pick the camera phone and type its code the first time.</li>
+        <li>Keep SimpleSwing open on both phones with the screen on.</li>
+      </ol>
+      <p>Every swing you save is then filmed from both, and Save to Photos makes one side-by-side video.</p>
+    </div>
+  </details>
+  <details>
+    <summary>The second phone isn't found, or misses swings</summary>
+    <div>
+      <ul>
+        <li>Make sure both phones run the same version of SimpleSwing.</li>
+        <li>On iPhone and iPad, allow Local Network access (Settings → Privacy &amp; Security → Local Network → SimpleSwing).</li>
+        <li>Some public or guest Wi-Fi blocks phones from seeing each other. Use one phone's hotspot instead. If the phone still isn't listed, type the address the camera phone shows.</li>
+        <li>Both phones must stay in SimpleSwing with the screen on. After either phone wakes from standby, give it a second before swinging.</li>
+      </ul>
+    </div>
+  </details>
+
+  <h2>Watch (Wear OS)</h2>
+  <details>
+    <summary>How do I use my watch?</summary>
+    <div>
+      <p>Install SimpleSwing on your Wear OS watch from Google Play (it appears for watches paired with your phone) and open it. In Settings → Watch on the phone:</p>
+      <ul>
+        <li><strong>Sense swings:</strong> only shots where your wrist swung are saved, each swing gets a tempo, and you can choose to save practice swings too.</li>
+        <li><strong>Tap to save:</strong> use the watch as a remote.</li>
+      </ul>
+      <p>The watch needs your phone nearby with SimpleSwing open on the Capture screen.</p>
+    </div>
+  </details>
+
+  <h2>Your data</h2>
+  <details>
+    <summary>Where are my swings, and how do I delete them?</summary>
+    <div>
+      <p>Your swings are stored only in SimpleSwing on your device. Delete them in the Swings tab, or uninstall the app to remove everything. Copies you saved to Photos or shared stay where you put them. See the <a href="privacy.html">privacy policy</a> for details.</p>
+    </div>
+  </details>
+  <details>
+    <summary>Do I need an internet connection?</summary>
+    <div>
+      <p>No. SimpleSwing works fully offline, including in airplane mode. The second-phone link needs the two phones on the same local network or hotspot, but not the internet.</p>
+    </div>
+  </details>
+
+  <footer>
+    <a href="index.html">SimpleSwing</a> · <a href="privacy.html">Privacy</a>
+  </footer>
+</div>
+</body>
+</html>

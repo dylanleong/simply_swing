@@ -30,6 +30,8 @@ public class SwingCaptureModule: Module, CaptureEngineListener {
 
     OnDestroy {
       CaptureEngine.shared.stop()
+      // Don't leave a listener advertising (or a link pinging) after the JS side is gone.
+      CaptureEngine.shared.peers.stop()
       if CaptureEngine.shared.listener === self { CaptureEngine.shared.listener = nil }
     }
 
@@ -89,7 +91,8 @@ public class SwingCaptureModule: Module, CaptureEngineListener {
       guard let source = URL(string: uri), source.isFileURL else {
         throw CaptureException("Not a file URI: \(uri)")
       }
-      let dir = FileManager.default.temporaryDirectory.appendingPathComponent("exports", isDirectory: true)
+      try ClipExporter.checkSlowMotionFactor(factor)
+      let dir = SwingFiles.exportsDir
       try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
       let output = dir.appendingPathComponent("\(source.deletingPathExtension().lastPathComponent)_slowmo_x\(factor).mp4")
       if !Self.isUpToDate(output, comparedTo: source) {
@@ -102,7 +105,12 @@ public class SwingCaptureModule: Module, CaptureEngineListener {
       guard let main = URL(string: uri), main.isFileURL, let angle = URL(string: angleUri), angle.isFileURL else {
         throw CaptureException("Not a file URI: \(uri) / \(angleUri)")
       }
-      let dir = FileManager.default.temporaryDirectory.appendingPathComponent("exports", isDirectory: true)
+      try ClipExporter.checkSlowMotionFactor(factor)
+      // Int(_: Double) traps on NaN / infinity; a shift beyond a minute is no alignment at all.
+      guard shiftMs.isFinite, abs(shiftMs) <= 60_000 else {
+        throw CaptureException("Bad angle shift: \(shiftMs) ms")
+      }
+      let dir = SwingFiles.exportsDir
       try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
       // Both clips and the alignment are in the name: another pairing or a nudge makes a fresh export.
       let shiftUs = Int((shiftMs * 1000).rounded())
@@ -119,8 +127,8 @@ public class SwingCaptureModule: Module, CaptureEngineListener {
       self.engine.peers.startMain()
     }
 
-    Function("connectPeer") { (idOrAddress: String) in
-      self.engine.peers.connect(idOrAddress)
+    Function("connectPeer") { (idOrAddress: String, code: String) in
+      self.engine.peers.connect(idOrAddress, code: code)
     }
 
     Function("startCameraLink") { (view: String) in
@@ -179,12 +187,15 @@ public class SwingCaptureModule: Module, CaptureEngineListener {
       "peerState": status.peerState,
       "syncMs": status.syncMs,
       "address": status.address,
+      "code": status.code,
     ])
   }
 
   func enginePeersFound(_ peers: [PeerLink.PeerInfo]) {
     sendEvent("onPeersFound", [
-      "peers": peers.map { ["id": $0.id, "name": $0.name, "host": $0.host, "port": $0.port] },
+      "peers": peers.map { peer -> [String: Any] in
+        ["id": peer.id, "name": peer.name, "host": peer.host, "port": peer.port]
+      },
     ])
   }
 

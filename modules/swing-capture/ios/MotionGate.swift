@@ -34,7 +34,7 @@ final class MotionGate {
     thresholdFactor: Double = 3.0,
     pixelDelta: Int = 18
   ) {
-    self.roi = roi
+    self.roi = roi.sanitized()
     self.lookback = lookback
     self.history = history
     self.minMotion = minMotion
@@ -42,9 +42,11 @@ final class MotionGate {
     self.pixelDelta = pixelDelta
   }
 
-  /// Returns true if the box actually changed.
+  /// Returns true if the box actually changed. Out-of-range or non-finite boxes are clamped (or
+  /// replaced by the default) first: `addFrame` turns them into pixel indices.
   @discardableResult
-  func setRoi(_ roi: NormalizedRoi) -> Bool {
+  func setRoi(_ newRoi: NormalizedRoi) -> Bool {
+    let roi = newRoi.sanitized()
     lock.lock()
     defer { lock.unlock() }
     if self.roi == roi { return false }

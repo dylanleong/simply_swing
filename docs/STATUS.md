@@ -1,6 +1,6 @@
 # SimpleSwing: status and hand-over
 
-_Last updated 2026-10-15. The plan is in [`PLAN.md`](PLAN.md); this file records what has actually been built, what was learned on real devices, and what comes next._
+_Last updated 2026-10-16. The plan is in [`PLAN.md`](PLAN.md); this file records what has actually been built, what was learned on real devices, and what comes next._
 
 ## Where we are
 
@@ -20,8 +20,9 @@ _Last updated 2026-10-15. The plan is in [`PLAN.md`](PLAN.md); this file records
 | Camera level check (accelerometer) | 🟡 Built; only checked lying flat (stays quiet). Check the tilt direction by hand | 🟡 Untested: the accelerometer's sign may differ |
 | Tempo (backswing : downswing from the wrist) | 🟡 Watch + phone built and unit-tested, **never run on a watch** | ⬜ Phase 6 |
 | Help & tips screen | ✅ Verified | Shared JS |
+| Release hardening (pairing code, safe writes, chime, permissions; see below) | 🟡 Built, unit-tested; device check pending | 🟡 Written, never compiled |
 | Purchases / paywall | ⬜ | ⬜ |
-| Store accounts & listing | ⬜ (upload key created) | ⬜ |
+| Store accounts & listing | 🟡 Drafts in `docs/release/`, site in `site/`; accounts not opened (upload key created) | 🟡 Same drafts |
 
 **Untested by design so far:** a real driving range. All thresholds are tuned on claps and arm swings at home.
 
@@ -71,6 +72,27 @@ _Last updated 2026-10-15. The plan is in [`PLAN.md`](PLAN.md); this file records
 - **Icons:** `@expo/vector-icons` (Ionicons and MaterialCommunityIcons) via `<Icon name="ion:…" | "mci:…">`.
 - **Library:** 3 columns, tags on the thumbnail, time only under it (the session header gives the day), filters in a sheet.
 
+## Release hardening (2026-10-16)
+
+From a pre-release audit of the whole codebase. Release documents: `docs/release/checklist.md` (launch steps, device test matrix), `store-listing.md`, `privacy-declarations.md`; privacy/support pages in `site/` (GitHub Pages).
+
+- **Two-phone pairing code** (protocol v2): see "Second camera" below. Before it, anyone on the same Wi-Fi could connect to a camera phone, pull clips, and (via a crafted clip id used as a file name) overwrite or delete swings.
+- **No lost or half-written clips:**
+  - A swing still in its post-roll when the pipeline stops (tapping away, standby, heat downgrade) is saved with what was recorded (`CaptureEngine.stopPipeline` → `takeFrames`; `PendingClip.claimed` decides whether export or the stop owns it).
+  - Clips and exports are written as `.part` and renamed (`ClipWriter.atomically`); leftovers are cleaned at engine start.
+  - Less than 100 MB free → `E_STORAGE` before writing. iOS: disk-full reports once and stops retrying.
+  - JS file writes (`swing-store.ts`) return false instead of throwing; screens show "Couldn't save".
+- **Saved chime:** `SavedChime` (Kotlin/Swift) synthesises a soft 250 ms E6→A6 chime after a main/solo clip is saved, when Settings → Sound when saved is on (default). It plays as a notification/system sound, so silent mode, notification volume and Do Not Disturb mute it. The impact detector is muted through the chime + 400 ms (reuses the touch mute, so Levels shows "touch"). The Wear OS watch now also double-buzzes on save while its screen is off (`SwingSensorService`).
+- **Capture tab is mounted behind other tabs:** idle dim, standby, keep-awake and the replay run only while it's focused (`useIsFocused`). Before, Swings/review dimmed to 5% after 30 s.
+- **Settings → auto-delete** asks before deleting existing swings.
+- **Permissions:** "Open Settings" when the OS won't ask again; re-checked on return to the foreground (`use-capture-permission.ts`, `permission-gate.tsx`).
+- **Review/compare:** Save/Share can't run twice at once; a clip that can't play shows "Can't play this clip" + Delete; a missing swing id shows "Swing not found"; delete falls back to `/library` when there's no back (cold-start deep link; `unstable_settings.anchor = '(tabs)'`).
+- **Library:** `getSwing` reads only that swing's files; pruning runs once per launch; file pairing is a pure, tested function (`swing-files.ts`); orphan angles and stale `.part` files are cleaned.
+- **Android policy:** `READ_MEDIA_*` blocked (Save to Photos is write-only); backup excludes `files/swings/` (it overflowed the 25 MB quota and skipped everything); Android 16 large-screen portrait opt-out (`plugins/with-android-policy.js`; Android 17 removes the opt-out). Version 1.0.0 (versionCode 1; wear 1000001).
+- **Robustness:** mic read errors stop the pipeline with `E_AUDIO` instead of spinning; `createSession` failures are caught; config/ROI values from JS are clamped (NaN-safe); the watch stops sensing after 2 min without any phone message; the peer link stops when the module is destroyed.
+- **iOS-only:** mic refusal records video-only instead of failing; the app configures `AVAudioSession` itself (`.playAndRecord` + `.mixWithOthers`) and re-applies it when expo-video changes the category, so replays don't cut the mic; `UIRequiresFullScreen` (iPad, portrait only).
+- **Accessibility:** scrubber is adjustable by screen readers; text in fixed-size controls is capped at 1.2–1.3× font scale.
+
 ## Watch: how wrist detection works (Wear OS)
 
 - **Watch** (`wear/`):
@@ -100,6 +122,11 @@ A second phone running SimpleSwing films another angle of the same swing (face o
 - **Roles:**
   - **Main phone:** the one you swing with. It triggers as usual and drives the camera phone. Turn it on from **+ Cam** on the Capture screen.
   - **Camera phone:** started from **Settings → Second camera → Use this phone as the camera**. It ignores its own triggers (impact sound, buttons, watch) and saves only what the main phone asks for. It goes into and out of standby with the main phone.
+- **Pairing:** the camera phone shows a 6-digit code (random, kept in SharedPreferences `simpleswing_peer` / UserDefaults `simpleswing.pairCode`). The main phone asks for it once per camera and saves it (`lastCameraCode`) for auto-reconnect.
+  - A connection can do nothing until its HELLO carries the code, and it never replaces the live link until then (5 s timeout, at most 4 waiting).
+  - Wrong code → `REJECT {id:"", reason:"code"}`, and every HELLO is refused for 2 s (`"wait"`), so guessing takes weeks. The main phone shows `E_PEER_CODE` and stops retrying.
+  - Both sides accept only clip ids `swing_<digits>`; the main phone only accepts clips it asked for (60 s), up to 256 MB and never more than announced; the camera rejects impossible windows (`PeerProtocol.isSaneWindow`, overflow-safe).
+  - The link is still plain TCP (not encrypted) on the local network; the privacy policy says so.
 - **Link:**
   - The camera phone listens on TCP **47800** (or any free port if that one is taken) and advertises `_simpleswing._tcp` over mDNS/Bonjour.
   - The main phone lists the camera phones it finds. If discovery fails, type the address the camera phone shows.
@@ -107,7 +134,7 @@ A second phone running SimpleSwing films another angle of the same swing (face o
   - Same Wi-Fi or one phone's hotspot. Nothing leaves the local network.
 - **Protocol** (`PeerProtocol.kt` / `.swift`, `scripts/multicam-peer.py`, keep all three in step):
   - Frames are `u8 type | u32 big-endian length | payload`. Payloads are JSON, except clip bytes, which go in 64 KB `DATA` chunks.
-  - `HELLO`, `PING`/`PONG` (every second), `STATE`, `TRIGGER`, `REJECT`, `CLIP` + `DATA`… + `DONE`, `BYE`.
+  - Version 2. `HELLO` (main's carries `code`), `PING`/`PONG` (every second), `STATE`, `TRIGGER`, `REJECT`, `CLIP` + `DATA`… + `DONE`, `BYE`.
   - The link drops after 6 s of silence.
 - **Clock sync** (`ClockSync`): NTP style, using the capture clocks on both phones.
   - It keeps the last 20 pings and uses the one with the smallest round trip. The error is half that round trip, shown as "±N ms".
@@ -122,6 +149,7 @@ A second phone running SimpleSwing films another angle of the same swing (face o
   - `E_PEER_CLIP`: the transfer was cut short.
   - `E_PEER_VERSION`: the two phones run different app versions.
   - `E_PEER_PERMISSION` (iOS): the Local Network permission was refused.
+  - `E_PEER_CODE`: the pairing code was wrong.
 - **Save / Share with "Both" on screen** export one side-by-side slow-motion video (`exportSideBySideAsync`): main clip left, angle right, 720×1280 panels with a 16 px gap (1456×1280), lined up with review's shift (nudge included, and part of the cache file name). Android: `SideBySideExporter` decodes both into SurfaceTextures and draws them with GL into the encoder; verified on the HONOR (upright, in step); a 4.5 s clip exports in ~2.3 s. Keep the decoders fed with every input buffer they will take and never block on the encoder mid-stream: one-at-a-time feeding with 10 ms waits made it ~25 s. iOS: `AVMutableVideoComposition`, written blind. With one angle on screen, only that angle is exported.
 - **Not done yet:** a two-phone run at the range, the paywall gate (it's a paid add-on in the plan), and angle labels burned into the side-by-side export.
 
@@ -129,10 +157,10 @@ A second phone running SimpleSwing films another angle of the same swing (face o
 
 `scripts/multicam-peer.py` stands in for the other phone (see its docstring):
 
-- **HONOR as main:** `adb reverse tcp:47800 tcp:47800`, then `scripts/multicam-peer.py camera --clip <some.mp4>`. On the phone, tap **+ Cam** and enter `127.0.0.1`. The pill should show connected with a sensible ±ms. Press SAVE or clap.
+- **HONOR as main:** `adb reverse tcp:47800 tcp:47800`, then `scripts/multicam-peer.py camera --clip <some.mp4>`. On the phone, tap **+ Cam**, enter `127.0.0.1` and code `123456` (the script's default `--code`). The pill should show connected with a sensible ±ms. Press SAVE or clap.
   - Check that `swing_<id>.b.mp4` and `.b.json` arrive (`adb shell run-as app.simpleswing ls files/swings`).
   - Check the library shows "2 angles" and review plays both, with frame step and nudge working.
-- **HONOR as camera:** Settings → Use this phone as the camera. Then `adb forward tcp:47800 tcp:47800` and `scripts/multicam-peer.py main --host 127.0.0.1 --trigger-every 10 --out /tmp/angles`.
+- **HONOR as camera:** Settings → Use this phone as the camera. Then `adb forward tcp:47800 tcp:47800` and `scripts/multicam-peer.py main --host 127.0.0.1 --code <code on the phone> --trigger-every 10 --out /tmp/angles`.
   - Clips should arrive with `anchorOffsetMs` ≈ 3000 for impacts, and `ffprobe` should show 120 fps with audio.
 - **Discovery:** `avahi-browse -r _simpleswing._tcp` should list the phone while it's in camera mode (if the VM's network bridging passes mDNS).
 - **Then, with two real phones:** film one clap from both. In review, the clap frame should line up within about a frame. If it doesn't, it's the sync or the anchor maths, not the nudge.
@@ -258,11 +286,12 @@ Expect compile errors. The Swift was written blind against the SDK 57 sources. P
 
 ## Next steps, in order
 
+0. **Device-check the release hardening.** Verified on the HONOR (2026-10-16): the chime plays (notification usage), Swings no longer dims, Save to Photos works with `READ_MEDIA_*` blocked, the HONOR clock fix still applies, "Swing not found", and pairing both ways against `multicam-peer.py` (wrong code refused, 2 s lockout, right code pairs, angles arrive, a path-traversal id and an overflow window are rejected, the app survives). Still to check: tapping away mid-post-roll (needs a real impact), the auto-delete confirmation with old swings, the OnePlus, and a real two-phone pairing.
 1. **Multicam:** the first two-phone run worked (2026-10-15). Still to check: clap alignment frame by frame, and why one SAVE got `REJECT busy` from the camera phone (probably still waking from standby right after the main phone's app restarted).
 2. **Range session** with the current Android build. Record Levels readings (dB, "swing P/T", shutter) for your strikes versus neighbours'. Also measure battery and warmth over 1 hour.
 3. **iOS first build** on the Mac and fix compile errors. Then work through the checklist above.
 4. **Tune thresholds** from the range data, on both platforms. The constants are `ImpactDetector.minLevelDb/marginDb` and `MotionGate.minMotion/thresholdFactor`.
-5. **Play policy tidy-up.** Try blocking `READ_MEDIA_VIDEO` and `READ_MEDIA_VISUAL_USER_SELECTED` while confirming Save to Photos still works. **Keep `INTERNET`:** the second-camera link needs it for local sockets. Nothing leaves the local network, so "Data Not Collected" still holds.
+5. **Play policy.** `READ_MEDIA_*` are now blocked (confirm Save to Photos still works on Android 13+). **Keep `INTERNET`:** the second-camera link needs it for local sockets. Nothing leaves the local network, so "Data Not Collected" still holds. Answers for the Play forms are in `docs/release/privacy-declarations.md`.
 6. **Purchases.** A £14.99 lifetime unlock via `expo-iap`. The free tier allows 3 auto-saves per session; `src/lib/trigger-quota.ts` is ready to wire to `SwingCapture.setAutoTrigger`.
 7. **Watch.** Pair the OnePlus Watch 2R through OHealth and install `wear/` over wireless ADB. Then tune `SwingDetector` on real swings, including its tempo (top and takeaway against the slow-motion clip), and check the clock alignment (log: `Wrist swing peak … one-way … ms`). Apple Watch (WCSession plus a HealthKit workout) on the Mac.
-8. **Store listing,** privacy policy ("Data Not Collected"), screenshots, then closed and TestFlight betas.
+8. **Store listing:** drafts in `docs/release/store-listing.md`; privacy and support pages in `site/` (fill in the developer name and contact email, host on GitHub Pages). Then screenshots, and closed and TestFlight betas. Open the Play account early: a new personal account needs a 14-day closed test with 12 testers.

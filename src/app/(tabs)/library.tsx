@@ -8,6 +8,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { alertDeleteFailed } from '@/lib/storage-alert';
 import { filterSwings, NO_FILTER, type Swing, type SwingFilter } from '@/lib/swing-library';
 import { deleteSwings, listSwings } from '@/lib/swing-store';
 
@@ -63,9 +64,10 @@ export default function LibraryScreen() {
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            deleteSwings([...selected]);
+            const ok = deleteSwings([...selected]);
             setSelected(null);
             reload();
+            if (!ok) alertDeleteFailed();
           },
         },
       ]

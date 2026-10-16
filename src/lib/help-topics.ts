@@ -130,9 +130,10 @@ export const HELP_TOPICS: HelpTopic[] = [
         heading: 'A second phone as a second camera',
         body:
           'Put both phones on the same Wi-Fi, or turn on one phone’s hotspot and join it from the other. ' +
-          'On the second phone: Settings → Use this phone as the camera, and choose its view. On your ' +
-          'phone: tap + Cam on the Capture screen and pick it. Keep SimpleSwing open on both. Every swing ' +
-          'you save is filmed from both, and Save to Photos makes one side-by-side video.',
+          'On the second phone: Settings → Use this phone as the camera, and choose its view. It shows a ' +
+          '6-digit code. On your phone: tap + Cam on the Capture screen, pick it and type that code (only ' +
+          'the first time; your phone remembers it). Keep SimpleSwing open on both. Every swing you save ' +
+          'is filmed from both, and Save to Photos makes one side-by-side video.',
       },
       {
         heading: 'Wear OS watch',
@@ -159,8 +160,9 @@ export const HELP_TOPICS: HelpTopic[] = [
         body:
           'Check AUTO is on. Tap the status pill to open Levels: a shot needs movement in the golfer box ' +
           'just before it, and a sound loud enough. Make the box cover where you stand and swing. If ' +
-          'strikes read too quiet, raise Settings → Impact sensitivity. You can always tap SAVE after a ' +
-          'swing.',
+          'strikes read too quiet, raise Settings → Impact sensitivity. Listen for the chime: a soft ' +
+          'two-note sound means the swing was saved (turn it on in Settings → Sound when saved; it ' +
+          'stays quiet when the phone is on silent). You can always tap SAVE after a swing.',
       },
       {
         heading: 'Someone else’s shot was saved',

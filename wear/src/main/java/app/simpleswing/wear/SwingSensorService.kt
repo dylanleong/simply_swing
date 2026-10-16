@@ -18,6 +18,8 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.util.Log
 import com.google.android.gms.wearable.MessageClient
 import com.google.android.gms.wearable.MessageEvent
@@ -36,6 +38,8 @@ class SwingSensorService : Service(), SensorEventListener, MessageClient.OnMessa
   private val nodes by lazy { Wearable.getNodeClient(this) }
   private var wakeLock: PowerManager.WakeLock? = null
   private var phoneIdleSinceMs = 0L
+  /** Last message of any kind from the phone (it pings every few seconds while Capture runs). */
+  @Volatile private var lastPhoneMs = SystemClock.elapsedRealtime()
 
   private val detector = SwingDetector { swing ->
     val ageMs = (SystemClock.elapsedRealtimeNanos() - swing.peakTimeNs) / 1_000_000
@@ -58,6 +62,14 @@ class SwingSensorService : Service(), SensorEventListener, MessageClient.OnMessa
       val idleFor = if (phoneIdleSinceMs == 0L) 0L else SystemClock.elapsedRealtime() - phoneIdleSinceMs
       if (idleFor > PHONE_IDLE_STOP_MS) {
         Log.i(TAG, "Phone left Capture ${idleFor / 1000} s ago; stopping")
+        stopSelf()
+        return
+      }
+      // The phone app was killed, went out of range or never opened: it can't send "idle", so
+      // don't keep the gyroscope and the notification going for hours.
+      val silentFor = SystemClock.elapsedRealtime() - lastPhoneMs
+      if (silentFor > PHONE_IDLE_STOP_MS) {
+        Log.i(TAG, "Nothing from the phone for ${silentFor / 1000} s; stopping")
         stopSelf()
         return
       }
@@ -108,6 +120,7 @@ class SwingSensorService : Service(), SensorEventListener, MessageClient.OnMessa
 
   override fun onMessageReceived(event: MessageEvent) {
     val payload = String(event.data)
+    lastPhoneMs = SystemClock.elapsedRealtime()
     when (event.path) {
       WearProtocol.PATH_STATE ->
         phoneIdleSinceMs = if (payload == "idle") {
@@ -117,6 +130,10 @@ class SwingSensorService : Service(), SensorEventListener, MessageClient.OnMessa
         }
       WearProtocol.PATH_CONFIG -> if (payload != WearProtocol.MODE_AUTO) stopSelf()
       WearProtocol.PATH_PING -> messages.sendMessage(event.sourceNodeId, WearProtocol.PATH_PONG, event.data)
+      // Mid-session the watch screen is usually off, so the open watch screen can't buzz "saved".
+      WearProtocol.PATH_SAVED -> if (listener == null) {
+        getSystemService(Vibrator::class.java)?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 80, 80, 80), -1))
+      }
     }
   }
 

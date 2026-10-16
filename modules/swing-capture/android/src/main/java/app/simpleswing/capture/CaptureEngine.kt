@@ -28,7 +28,6 @@ import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import kotlin.math.abs
 
 enum class EngineState(val jsName: String) {
   IDLE("idle"),
@@ -124,14 +123,15 @@ class CaptureEngine private constructor(private val context: Context) {
   private val tempos = TempoLog()
   /** Link to a second phone: drives it as a camera (main role) or is driven by one (camera role). */
   val peers = PeerLink(context, { clipsDir }, PeerHost())
+  private val chime = SavedChime(context)
   /** Sound + wrist decisions while the watch is sensing (guarded by itself). */
   private val fusion = TriggerFusion()
   /** Level details of sounds waiting for a wrist verdict, keyed by sound time. */
   private val pendingSounds = HashMap<Long, Pair<Double, Double>>()
 
-  // Owned by the camera thread.
-  private var config: CaptureConfig? = null
-  private var format: CaptureFormat? = null
+  // Written on the camera thread (also read from trigger and export threads).
+  @Volatile private var config: CaptureConfig? = null
+  @Volatile private var format: CaptureFormat? = null
   private var fpsRange: Range<Int>? = null
   @Volatile private var previewHost: PreviewHost? = null
   /** The preview's current surface and its buffer size, whatever size it is right now. */
@@ -170,10 +170,22 @@ class CaptureEngine private constructor(private val context: Context) {
     val forPeer: Boolean = false,
   ) {
     @Volatile var exporting = false
+    /** Under [triggerLock]: export() or a pipeline stop has taken this clip's frames. */
+    var claimed = false
   }
+
+  /** A clip's frames, taken out of the rings so a pipeline restart can't clear them mid-save. */
+  private class ClipFrames(
+    val clip: PendingClip,
+    val videoFormat: MediaFormat,
+    val video: List<EncodedSample>,
+    val audioFormat: MediaFormat?,
+    val audio: List<EncodedSample>,
+  )
 
   init {
     wear.start()
+    exportExecutor.execute(::cleanLeftovers)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       context.getSystemService(PowerManager::class.java)?.addThermalStatusListener(exportExecutor) { status ->
         if (status >= PowerManager.THERMAL_STATUS_SEVERE) cameraHandler.post(::downgradeForHeat)
@@ -405,7 +417,12 @@ class CaptureEngine private constructor(private val context: Context) {
         return
       }
       camera = device
-      createSession(device, preview, gen)
+      // The camera can be taken away (another app, the lock-screen camera) between opening and here.
+      try {
+        createSession(device, preview, gen)
+      } catch (e: Exception) {
+        fail(e)
+      }
     }
 
     override fun onDisconnected(device: CameraDevice) {
@@ -562,7 +579,22 @@ class CaptureEngine private constructor(private val context: Context) {
   private fun stopPipeline() {
     generation++
     motionGeneration = -1
-    synchronized(triggerLock) { pending = null }
+    // A swing whose post-roll hasn't finished (the golfer tapped away, standby, the heat downgrade)
+    // is saved with what was recorded so far rather than lost with the buffer.
+    val flushed = synchronized(triggerLock) {
+      val p = pending
+      pending = null
+      if (p != null && !p.claimed) {
+        p.claimed = true
+        takeFrames(p)
+      } else {
+        null
+      }
+    }
+    flushed?.let { frames ->
+      Log.i(TAG, "Pipeline stopping with clip ${frames.clip.id} pending: saving ${frames.video.size} frames")
+      exportExecutor.execute { save(frames) }
+    }
     mainHandler.post { volumeKeys.uninstall() }
     try {
       session?.close()
@@ -656,26 +688,20 @@ class CaptureEngine private constructor(private val context: Context) {
     }
   }
 
-  /**
-   * Camera frames should carry timestamps on [clock]'s time base, but some vendor encoders rewrite
-   * them. Frames reach us within ~100 ms of capture, so a gap over a second means a different base;
-   * map it onto the capture clock (costs A/V sync accuracy of roughly the pipeline latency).
-   */
+  /** See VideoClockOffset. */
   private fun measureVideoOffset(ptsUs: Long): Long {
     val now = clock.nowUs()
-    val boot = SystemClock.elapsedRealtimeNanos() / 1000
-    val mono = System.nanoTime() / 1000
-    val delta = now - ptsUs
-    // Prefer an exact clock-to-clock shift (e.g. HONOR stamps high-speed frames with CLOCK_MONOTONIC
-    // while declaring REALTIME); fall back to the measured gap for anything else.
-    val offset = when {
-      abs(delta) < 1_000_000 -> 0L
-      abs(mono - ptsUs) < 1_000_000 -> now - mono
-      abs(boot - ptsUs) < 1_000_000 -> now - boot
-      else -> delta
-    }
-    Log.i(TAG, "First video frame pts=$ptsUs clockNow=$now delta=${delta}us -> offset=${offset}us")
+    val offset = VideoClockOffset.measure(ptsUs, now, SystemClock.elapsedRealtimeNanos() / 1000, System.nanoTime() / 1000)
+    Log.i(TAG, "First video frame pts=$ptsUs clockNow=$now delta=${now - ptsUs}us -> offset=${offset}us")
     return offset
+  }
+
+  /** Under [triggerLock]. Null if nothing usable was recorded. */
+  private fun takeFrames(p: PendingClip): ClipFrames? {
+    val vf = videoFormat ?: return null
+    val video = videoRing.snapshot(p.window.startUs, p.window.endUs)
+    if (video.isEmpty()) return null
+    return ClipFrames(p, vf, video, audioFormat, audioRing.snapshot(p.window.startUs, p.window.endUs))
   }
 
   // ---- Export thread ----
@@ -683,26 +709,43 @@ class CaptureEngine private constructor(private val context: Context) {
   private fun export(p: PendingClip) {
     // Let the last AAC frames for the window come out of the audio encoder.
     Thread.sleep(AUDIO_SETTLE_MS)
-    synchronized(triggerLock) {
-      if (pending !== p) return
+    val frames = synchronized(triggerLock) {
+      if (pending !== p || p.claimed) return
+      p.claimed = true
       setState(EngineState.EXPORTING)
+      takeFrames(p)
     }
     try {
-      val vf = videoFormat ?: throw CaptureException("E_EXPORT", "Video encoder not ready")
-      val video = videoRing.snapshot(p.window.startUs, p.window.endUs)
-      val audio = audioRing.snapshot(p.window.startUs, p.window.endUs)
+      if (frames != null) save(frames) else listener?.onError("E_EXPORT", "Couldn't save that swing: no video was recorded.")
+    } finally {
+      synchronized(triggerLock) {
+        if (pending === p) {
+          pending = null
+          if (state == EngineState.EXPORTING) setState(EngineState.ARMED)
+        }
+      }
+    }
+  }
+
+  /** Writes a clip and tells everyone. Export thread. */
+  private fun save(frames: ClipFrames) {
+    val p = frames.clip
+    try {
       if (p.forPeer) {
         val dir = File(context.cacheDir, "peer").apply { mkdirs() }
+        ClipWriter.ensureSpace(dir)
         val clip = ClipWriter.write(
-          File(dir, "${p.id}.mp4"), vf, video, audioFormat, audio, p.format.sensorOrientation,
-          p.window.impactUs, p.window.anchorUs, thumbnail = false,
+          File(dir, "${p.id}.mp4"), frames.videoFormat, frames.video, frames.audioFormat, frames.audio,
+          p.format.sensorOrientation, p.window.impactUs, p.window.anchorUs, thumbnail = false,
         )
         peers.sendClip(p.id, clip.file, p.format.fps, clip.durationUs / 1000.0, clip.anchorOffsetUs / 1000.0)
         return
       }
+      ClipWriter.ensureSpace(clipsDir)
       val file = File(clipsDir, "${p.id}.mp4")
       val clip = ClipWriter.write(
-        file, vf, video, audioFormat, audio, p.format.sensorOrientation, p.window.impactUs, p.window.anchorUs,
+        file, frames.videoFormat, frames.video, frames.audioFormat, frames.audio, p.format.sensorOrientation,
+        p.window.impactUs, p.window.anchorUs,
       )
       // The wrist swing that set this clip off (sound + wrist, or a practice swing) knows its tempo.
       val tempo = if (p.source == TriggerSource.IMPACT || p.source == TriggerSource.WRIST) {
@@ -724,17 +767,29 @@ class CaptureEngine private constructor(private val context: Context) {
       )
       ClipWriter.writeSidecar(clip.file, info + ("createdAt" to System.currentTimeMillis()))
       wear.broadcastSaved()
+      if (config?.savedSound == true) playChime()
       listener?.onClipReady(info)
     } catch (e: Exception) {
       Log.e(TAG, "Export failed", e)
       listener?.onError((e as? CaptureException)?.code ?: "E_EXPORT", e.message ?: e.toString())
-    } finally {
-      synchronized(triggerLock) {
-        if (pending === p) {
-          pending = null
-          if (state == EngineState.EXPORTING) setState(EngineState.ARMED)
-        }
-      }
+    }
+  }
+
+  /** The phone's own speaker is right next to its mic: mute the impact detector while it chimes. */
+  private fun playChime() {
+    // The touch mute covers TOUCH_MUTE_US from this instant, comfortably longer than the chime.
+    lastTouchUs = clock.nowUs() + chime.durationUs + CHIME_MUTE_EXTRA_US - TOUCH_MUTE_US
+    chime.play()
+  }
+
+  /** Part files from a crash, camera-phone clips that never went out, and exports nobody used in a week. */
+  private fun cleanLeftovers() {
+    runCatching {
+      clipsDir.listFiles { f -> f.name.endsWith(".part") }?.forEach { it.delete() }
+      File(context.cacheDir, "peer").listFiles()?.forEach { it.delete() }
+      val weekAgo = System.currentTimeMillis() - 7 * 24 * 3600 * 1000L
+      File(context.cacheDir, "exports").listFiles { f -> f.lastModified() < weekAgo || f.name.endsWith(".part") }
+        ?.forEach { it.delete() }
     }
   }
 
@@ -798,6 +853,7 @@ class CaptureEngine private constructor(private val context: Context) {
     private const val EXPORT_WATCHDOG_MS = 3_000L
     /** Sounds this soon after a screen touch are the phone being handled, not a strike. */
     private const val TOUCH_MUTE_US = 1_500_000L
+    private const val CHIME_MUTE_EXTRA_US = 400_000L
     private const val SHARP_MODE_EV = -1.0
     /** How long a sound rejected for "no wrist swing" can still be claimed by a late wrist message. */
     private const val LATE_WRIST_MS = 2_500L

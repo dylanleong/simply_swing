@@ -35,10 +35,14 @@ export type CaptureSettings = {
   secondCamera: boolean;
   /** The camera phone last connected, reconnected to automatically when it's found again. */
   lastCameraName: string | null;
+  /** That camera phone's pairing code (6 digits), so reconnecting doesn't ask for it again. */
+  lastCameraCode: string | null;
   /** This phone's angle when it's used as the second camera. */
   cameraView: CameraView;
   /** The club in hand: every saved swing is tagged with it until it's changed. */
   club: Club | null;
+  /** A soft chime when a swing is saved (follows the phone's silent switch). */
+  savedSound: boolean;
 };
 
 export const FPS_OPTIONS = [60, 120, 240] as const;
@@ -74,9 +78,11 @@ export const DEFAULT_SETTINGS: CaptureSettings = {
   savePracticeSwings: false,
   secondCamera: false,
   lastCameraName: null,
+  lastCameraCode: null,
   // The main phone usually sits down the line, where the golfer box works best.
   cameraView: 'faceOn',
   club: null,
+  savedSound: true,
 };
 
 /** Smallest golfer box, as a fraction of the preview on each axis. */
@@ -112,6 +118,14 @@ function oneOf<T>(options: readonly T[], value: unknown, fallback: T): T {
   return options.includes(value as T) ? (value as T) : fallback;
 }
 
+/** A camera phone's pairing code: exactly six digits, as it shows them. */
+export const PAIRING_CODE_LENGTH = 6;
+
+export const isPairingCode = (v: unknown): v is string => typeof v === 'string' && /^\d{6}$/.test(v);
+
+/** What the user typed ("482 913", "482-913") → the code's digits, at most six. */
+export const pairingCodeDigits = (input: string) => input.replace(/\D/g, '').slice(0, PAIRING_CODE_LENGTH);
+
 const bool = (value: unknown, fallback: boolean) => (typeof value === 'boolean' ? value : fallback);
 
 /** Parses stored settings, falling back to defaults for anything missing or malformed. */
@@ -142,7 +156,9 @@ export function parseSettings(json: string | null): CaptureSettings {
     savePracticeSwings: bool(raw.savePracticeSwings, d.savePracticeSwings),
     secondCamera: bool(raw.secondCamera, d.secondCamera),
     lastCameraName: typeof raw.lastCameraName === 'string' ? raw.lastCameraName : d.lastCameraName,
+    lastCameraCode: isPairingCode(raw.lastCameraCode) ? raw.lastCameraCode : d.lastCameraCode,
     cameraView: oneOf(CAMERA_VIEW_OPTIONS, raw.cameraView, d.cameraView),
     club: oneOf<Club | null>(CLUBS, raw.club, d.club),
+    savedSound: bool(raw.savedSound, d.savedSound),
   };
 }

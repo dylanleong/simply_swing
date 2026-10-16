@@ -8,11 +8,11 @@ phone can be tested in either role through an adb port tunnel:
     adb reverse tcp:47800 tcp:47800
     adb exec-out run-as app.simpleswing cat files/swings/<some swing>.mp4 > /tmp/angle.mp4
     scripts/multicam-peer.py camera --clip /tmp/angle.mp4
-    then on the phone: Capture → 2nd camera → address 127.0.0.1
+    then on the phone: Capture → + Cam → address 127.0.0.1, code 123456 (or --code)
 
   Phone as CAMERA, this script as the main phone:
     adb forward tcp:47800 tcp:47800
-    scripts/multicam-peer.py main --host 127.0.0.1 --trigger-every 10 --out /tmp/angles
+    scripts/multicam-peer.py main --host 127.0.0.1 --code <code on the phone> --trigger-every 10 --out /tmp/angles
 
 The camera role prints how far in the future each requested window ends on its own clock: about
 1.5 s for an impact (minus the link delay) means clock sync and window conversion work. Our clock
@@ -27,7 +27,7 @@ import struct
 import threading
 import time
 
-VERSION = 1
+VERSION = 2
 PORT = 47800
 CHUNK = 64 * 1024
 HELLO, PING, PONG, STATE, TRIGGER, REJECT, CLIP, DATA, DONE, BYE = range(1, 11)
@@ -74,9 +74,17 @@ def run_camera(args) -> None:
         conn, addr = server.accept()
         print(f'camera: main phone connected from {addr}')
         link = Link(conn)
-        link.send(HELLO, dict(v=VERSION, role='camera', name='Fake camera', platform='script', fps=120, view=args.view))
-        link.send(STATE, dict(state='armed'))
         try:
+            # Like the real camera phone: nothing until the main phone's HELLO carries our code.
+            kind, m = link.read()
+            if kind != HELLO or m.get('role') != 'main' or m.get('code') != args.code:
+                print(f'camera: refused pairing (code {m.get("code") if kind == HELLO else None!r})')
+                link.send(REJECT, dict(id='', reason='code'))
+                conn.close()
+                continue
+            print(f'camera: paired with {m.get("name")} ({m.get("platform")}, v{m.get("v")})')
+            link.send(HELLO, dict(v=VERSION, role='camera', name='Fake camera', platform='script', fps=120, view=args.view))
+            link.send(STATE, dict(state='armed'))
             while True:
                 kind, m = link.read()
                 received = now_us()
@@ -120,7 +128,7 @@ def run_main(args) -> None:
     sock = socket.create_connection((args.host, args.port), timeout=5)
     sock.settimeout(None)
     link = Link(sock)
-    link.send(HELLO, dict(v=VERSION, role='main', name='Fake main', platform='script', fps=120, view=''))
+    link.send(HELLO, dict(v=VERSION, role='main', name='Fake main', platform='script', fps=120, view='', code=args.code))
     link.send(STATE, dict(state='armed'))
     samples = []  # (rtt, offset)
     best = {}
@@ -166,6 +174,9 @@ def run_main(args) -> None:
             print(f'main: camera is {m.get("name")} ({m.get("platform")}, {m.get("fps")} fps, view {m.get("view")})')
         elif kind == STATE:
             print(f'main: camera is {m["state"]}')
+        elif kind == REJECT and m['id'] == '':
+            print(f'main: camera refused pairing: {m["reason"]}')
+            return
         elif kind == REJECT:
             print(f'main: camera missed {m["id"]}: {m["reason"]}')
         elif kind == CLIP:
@@ -193,8 +204,10 @@ def main() -> None:
     cam = sub.add_parser('camera', help='act as the camera phone (the phone is main)')
     cam.add_argument('--clip', help='MP4 to send back for every trigger')
     cam.add_argument('--view', default='faceOn', choices=['dtl', 'faceOn'])
+    cam.add_argument('--code', default='123456', help='pairing code the main phone must send')
     mn = sub.add_parser('main', help='act as the main phone (the phone is the camera)')
     mn.add_argument('--host', default='127.0.0.1')
+    mn.add_argument('--code', required=True, help='the pairing code the camera phone shows')
     mn.add_argument('--trigger-every', type=float, default=10, help='seconds between triggers (0 = never)')
     mn.add_argument('--out', default='/tmp/simpleswing-angles')
     for sp in (cam, mn):

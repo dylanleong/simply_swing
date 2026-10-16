@@ -9,6 +9,7 @@ import {
   NO_FILTER,
   parseSwing,
   parseTempo,
+  pruneQuestion,
   swingsToPrune,
   type Swing,
 } from '../swing-library';
@@ -116,6 +117,15 @@ describe('swingsToPrune', () => {
     const fav = { ...swing('fav', 90), notes: { ...EMPTY_NOTES, favorite: true } };
     expect(swingsToPrune([fav, swing('old', 90)], 7, now)).toEqual(['old']);
   });
+
+  it('counts what a shorter period would delete, for the confirmation', () => {
+    const fav = { ...swing('fav', 40), notes: { ...EMPTY_NOTES, favorite: true } };
+    const swings = [swing('a', 2), swing('b', 10), swing('c', 40), fav];
+    expect(swingsToPrune(swings, 30, now)).toHaveLength(1);
+    expect(swingsToPrune(swings, 7, now)).toEqual(['b', 'c']);
+    expect(pruneQuestion(37, 7)).toBe('Delete 37 swings older than 7 days? Favourites are kept.');
+    expect(pruneQuestion(1, 30)).toBe('Delete 1 swing older than 30 days? Favourites are kept.');
+  });
 });
 
 describe('tempo', () => {
@@ -184,6 +194,27 @@ describe('formatSession', () => {
     expect(formatSession({ start: start - 24 * 60 * 60 * 1000, end: start - 24 * 60 * 60 * 1000 }, now)).toMatch(
       /^Yesterday · [^–]+$/
     );
+  });
+
+  describe('across a clock change', () => {
+    const tz = process.env.TZ;
+    // 29 March 2026 is a 23-hour day in the UK.
+    beforeAll(() => {
+      process.env.TZ = 'Europe/London';
+    });
+    afterAll(() => {
+      process.env.TZ = tz;
+    });
+
+    it('calls the previous calendar day yesterday, however long it was', () => {
+    // Just after midnight, a swing late last evening is yesterday, not "24 h ago" (a 23 h day when the
+    // clocks go forward would make it the day before).
+    const now = new Date(2026, 2, 30, 0, 30).getTime();
+    const lateLastNight = new Date(2026, 2, 29, 0, 10).getTime();
+    expect(formatSession({ start: lateLastNight, end: lateLastNight }, now)).toMatch(/^Yesterday · /);
+    const twoDaysAgo = new Date(2026, 2, 28, 23, 50).getTime();
+    expect(formatSession({ start: twoDaysAgo, end: twoDaysAgo }, now)).not.toMatch(/^Yesterday/);
+    });
   });
 });
 

@@ -75,6 +75,7 @@ class SwingCaptureModule : Module() {
           "peerState" to status.peerState,
           "syncMs" to status.syncMs,
           "address" to status.address,
+          "code" to status.code,
         ),
       )
 
@@ -116,6 +117,7 @@ class SwingCaptureModule : Module() {
 
     OnDestroy {
       engine.stop()
+      engine.peers.stop()
       if (engine.listener === engineListener) engine.listener = null
     }
 
@@ -190,8 +192,8 @@ class SwingCaptureModule : Module() {
       Unit
     }
 
-    Function("connectPeer") { idOrAddress: String ->
-      engine.peers.connect(idOrAddress)
+    Function("connectPeer") { idOrAddress: String, code: String ->
+      engine.peers.connect(idOrAddress, code)
       Unit
     }
 

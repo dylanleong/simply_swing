@@ -45,6 +45,9 @@ export function useLinkedPlayers(uriA: string, uriB: string | null, link: Link |
   const player = useVideoPlayer(uriA, setup);
   const playerB = useVideoPlayer(uriB, setup);
   const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
+  // A half-written or corrupt clip ends in 'error': say so instead of showing a black pane.
+  const { status } = useEvent(player, 'statusChange', { status: player.status });
+  const { status: statusB } = useEvent(playerB, 'statusChange', { status: playerB.status });
 
   useEffect(() => {
     const sub = player.addListener('timeUpdate', (e) => setPosition(e.currentTime));
@@ -94,5 +97,18 @@ export function useLinkedPlayers(uriA: string, uriB: string | null, link: Link |
     setPlaybackRate(playerB, r);
   };
 
-  return { player, playerB, isPlaying, rate, position, pause, showAt, togglePlay, step, changeRate };
+  return {
+    player,
+    playerB,
+    isPlaying,
+    rate,
+    position,
+    failed: status === 'error',
+    failedB: uriB != null && statusB === 'error',
+    pause,
+    showAt,
+    togglePlay,
+    step,
+    changeRate,
+  };
 }
