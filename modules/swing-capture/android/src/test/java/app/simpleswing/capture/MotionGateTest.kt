@@ -1,6 +1,5 @@
 package app.simpleswing.capture
 
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -109,7 +108,7 @@ class MotionGateTest {
     var t = feed(gate, 0, 2.0) { null }
     t = feed(gate, t, 0.2) { i -> 10 + i * 4 } // 0.2 s burst
     t = feed(gate, t, 0.2) { null }
-    assertTrue(gate.peakSince(t, 500_000)!! > gate.latest()!!)
+    assertTrue(gate.peakSince(t, 500_000)!! > gate.peakSince(t, 100_000)!!)
   }
 
   @Test
@@ -117,13 +116,5 @@ class MotionGateTest {
     val gate = MotionGate(roi)
     gate.addFrame(0, frame(1), w, h)
     assertNull(gate.evaluate(0))
-  }
-
-  @Test
-  fun latestReportsMostRecentMotion() {
-    val gate = MotionGate(roi)
-    gate.addFrame(0, frame(1), w, h)
-    gate.addFrame(frameUs, frame(1), w, h)
-    assertEquals(0.0, gate.latest()!!, 1e-9)
   }
 }

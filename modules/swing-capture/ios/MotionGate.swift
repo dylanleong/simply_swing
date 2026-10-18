@@ -103,12 +103,6 @@ final class MotionGate {
     return Verdict(peak: peak, threshold: threshold, passed: peak >= threshold)
   }
 
-  func latest() -> Double? {
-    lock.lock()
-    defer { lock.unlock() }
-    return energies.last
-  }
-
   /// Peak motion over the last `span` seconds (the UI samples twice a second; a downswing is ~0.3 s).
   func peak(since time: Double, span: Double) -> Double? {
     lock.lock()

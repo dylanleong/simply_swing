@@ -14,7 +14,7 @@ class EncodedRingTest {
     for (i in 0 until 400) ring.add(frame(i)) // 4 s of video
     // Newest is 3.99 s; cutoff 2.99 s; last keyframe at or before it is 2.5 s.
     assertEquals(2_500_000L, ring.oldestPtsUs())
-    assertEquals(150, ring.size())
+    assertEquals(150, ring.snapshot(fromUs = 0, toUs = Long.MAX_VALUE).size)
   }
 
   @Test

@@ -23,8 +23,6 @@ class ClockSyncTest {
     s.ping(1_000_000, outUs = 2_000, backUs = 2_000)
     assertEquals(skew, s.offsetUs)
     assertEquals(2_000L, s.errorUs)
-    assertEquals(1_000_000L + skew, s.toPeer(1_000_000))
-    assertEquals(1_000_000L, s.toLocal(1_000_000 + skew))
   }
 
   @Test
@@ -66,6 +64,5 @@ class ClockSyncTest {
     assertFalse(s.add(t1 = 1_000, t2 = 2_000, t3 = 3_000, t4 = 1_500)) // negative round trip
     assertFalse(s.add(t1 = 0, t2 = 0, t3 = 0, t4 = 2_000_000)) // stalled link
     assertNull(s.offsetUs)
-    assertNull(s.toPeer(0))
   }
 }

@@ -14,9 +14,11 @@ import com.google.android.gms.wearable.Wearable
  * key on both sides is what lets Google Play services route these messages.
  *
  * Protocol (keep in sync with wear/src/main/java/app/simpleswing/wear/WearProtocol.kt):
- *   watch → phone  /simpleswing/hello      ask for current state (+ we resend the config)
+ *   watch → phone  /simpleswing/hello      "1": protocol version (empty from older watch apps = 0);
+ *                                          asks for current state (+ we resend the config)
  *   watch → phone  /simpleswing/trigger    tap-to-save
- *   watch → phone  /simpleswing/swing      "ageMs,peakDps": wrist swing that peaked ageMs ago
+ *   watch → phone  /simpleswing/swing      "ageMs,peakDps[,backswingMs,downswingMs]": wrist swing
+ *                                          that peaked ageMs ago, with its tempo when measured
  *   watch → phone  /simpleswing/heartbeat  sensing is running (every ~5 s)
  *   watch → phone  /simpleswing/pong       echo of a ping (clock round trip)
  *   phone → watch  /simpleswing/state      engine state name
@@ -38,6 +40,9 @@ class WearBridge(
   private val handler = Handler(Looper.getMainLooper())
 
   @Volatile private var mode = MODE_AUTO
+  /** Protocol version the watch app announced in its last hello; -1 until one arrives. */
+  @Volatile var watchVersion = -1
+    private set
   @Volatile private var lastHeardMs = 0L
   @Volatile private var lastHeartbeatMs = 0L
   private val recentRttMs = ArrayDeque<Long>()
@@ -83,6 +88,8 @@ class WearBridge(
     val payload = String(event.data)
     when (event.path) {
       PATH_HELLO -> {
+        watchVersion = parseVersion(payload)
+        if (watchVersion < PROTOCOL_VERSION) Log.w(TAG, "Watch app speaks protocol v$watchVersion, phone v$PROTOCOL_VERSION: update the watch app")
         send(event.sourceNodeId, PATH_STATE, currentState().jsName)
         send(event.sourceNodeId, PATH_CONFIG, mode)
       }
@@ -131,6 +138,12 @@ class WearBridge(
 
   companion object {
     private const val TAG = "SwingWearBridge"
+    /** What this phone speaks; the watch sends its own as the hello payload (WearProtocol.VERSION). */
+    const val PROTOCOL_VERSION = 1
+
+    /** The hello payload as a version: empty or unparsable (watch apps before versioning) is 0. */
+    fun parseVersion(payload: String): Int = payload.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
+
     const val PATH_HELLO = "/simpleswing/hello"
     const val PATH_TRIGGER = "/simpleswing/trigger"
     const val PATH_STATE = "/simpleswing/state"

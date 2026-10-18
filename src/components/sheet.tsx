@@ -6,6 +6,7 @@ import { Icon, type IconName } from '@/components/icon';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { MAX_CONTENT_WIDTH } from '@/lib/layout';
 
 /** A bottom sheet: the home for options that aren't used often enough to sit on screen. */
 export function Sheet({
@@ -90,6 +91,10 @@ const styles = StyleSheet.create({
     borderTopRightRadius: Spacing.four,
     paddingTop: Spacing.two,
     maxHeight: '80%',
+    // Centred and phone-wide on a tablet, so rows don't stretch across the screen.
+    width: '100%',
+    maxWidth: MAX_CONTENT_WIDTH,
+    alignSelf: 'center',
   },
   handle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, marginBottom: Spacing.two },
   title: { paddingHorizontal: Spacing.four, paddingVertical: Spacing.two, letterSpacing: 0.8 },

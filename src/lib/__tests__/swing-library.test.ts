@@ -1,4 +1,5 @@
 import {
+  clipAspect,
   filterSwings,
   formatBytes,
   formatClipTime,
@@ -38,9 +39,31 @@ describe('parseSwing', () => {
       source: 'impact',
       sizeBytes: 15_000_000,
       angle: null,
+      width: null,
+      height: null,
       tempo: null,
       notes: EMPTY_NOTES,
+      version: 1,
     });
+  });
+
+  it('reads the upright clip size and falls back to portrait 9:16 without one', () => {
+    const landscape = parseSwing('swing_1.mp4', DIR, '{"width":1920,"height":1080,"orientation":0}', false);
+    expect(landscape).toMatchObject({ width: 1920, height: 1080 });
+    expect(clipAspect(landscape)).toBeCloseTo(16 / 9);
+    expect(clipAspect(parseSwing('swing_1.mp4', DIR, null, false))).toBeCloseTo(9 / 16);
+    // An older camera phone sends 0 for "unknown".
+    expect(parseSwing('swing_1.mp4', DIR, '{"width":0,"height":0}', false)).toMatchObject({ width: null, height: null });
+    expect(clipAspect(null)).toBeCloseTo(9 / 16);
+  });
+
+  it('reads the schema version and ignores fields it does not know', () => {
+    const future = JSON.stringify({ v: 3, fps: 240, impactOffsetMs: 2500, lensTemperatureC: 41, extras: { a: 1 } });
+    const s = parseSwing('swing_9.mp4', DIR, future, false);
+    expect(s).toMatchObject({ version: 3, fps: 240, impactOffsetMs: 2500 });
+    expect(s).not.toHaveProperty('lensTemperatureC');
+    expect(parseSwing('swing_9.mp4', DIR, '{"v":"two"}', false)?.version).toBe(1);
+    expect(parseSwing('swing_9.mp4', DIR, null, false)?.version).toBe(1);
   });
 
   it('attaches a second angle and counts its size', () => {
@@ -58,6 +81,8 @@ describe('parseSwing', () => {
       deviceName: 'Pixel 8',
       syncMs: 0.8,
       nudgeMs: 0,
+      width: null,
+      height: null,
     });
   });
 

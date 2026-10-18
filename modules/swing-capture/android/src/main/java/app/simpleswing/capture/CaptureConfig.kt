@@ -84,5 +84,5 @@ data class CaptureConfig(
   val watchMode: String = WearBridge.MODE_AUTO,
   val savePracticeSwings: Boolean = false,
   /** Chime when a swing is saved (main / solo phone only). */
-  val savedSound: Boolean = false,
+  val savedSound: Boolean = true,
 )

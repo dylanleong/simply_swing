@@ -8,11 +8,13 @@ import { Icon } from '@/components/icon';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { fitRect, type Shape } from '@/lib/swing-notes';
+import { DEFAULT_CLIP_ASPECT } from '@/lib/swing-library';
 
 /** One clip in review or compare: the video, its drawings and grid, an optional corner label. */
 export function VideoPane({
   player,
   label,
+  aspect = DEFAULT_CLIP_ASPECT,
   mirrored = false,
   grid = false,
   shapes = [],
@@ -25,6 +27,8 @@ export function VideoPane({
 }: {
   player: VideoPlayer;
   label?: string;
+  /** The clip's upright shape (width / height), so the label and drawings sit on the picture. */
+  aspect?: number;
   mirrored?: boolean;
   grid?: boolean;
   shapes?: Shape[];
@@ -45,7 +49,7 @@ export function VideoPane({
     <View
       style={styles.pane}
       onLayout={(e) => {
-        const r = fitRect(e.nativeEvent.layout.width, e.nativeEvent.layout.height);
+        const r = fitRect(e.nativeEvent.layout.width, e.nativeEvent.layout.height, aspect);
         setFrame({ x: r.x, y: r.y });
       }}>
       {/* textureView: a SurfaceView ignores the mirror transform on Android. */}
@@ -61,6 +65,7 @@ export function VideoPane({
         tool={onAddShape ? tool : null}
         mirrored={mirrored}
         grid={grid}
+        aspect={aspect}
         onAdd={(s) => onAddShape?.(s)}
       />
       {failed && (

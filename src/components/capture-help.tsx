@@ -4,37 +4,21 @@ import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { MAX_CONTENT_WIDTH } from '@/lib/layout';
 
+/** Three steps; everything else is in Help. */
 const steps = (lookbackSec: number): { title: string; body: string }[] => [
   {
     title: 'Set up the phone',
-    body:
-      'Tripod about 3 m away, camera at hand height, upright and level (a bar at the top warns if it’s ' +
-      'tilted). Down the line: behind you, aiming along your target line. Face on: square to your chest.',
+    body: 'Tripod about 3 m away, camera at hand height, upright and level. Down the line or face on.',
   },
   {
     title: 'Fit the golfer box',
-    body:
-      'Drag the dashed box over where you stand and swing; drag a corner to resize it. It flashes ' +
-      'green when it sees a swing (standing still is fine; it watches for movement).',
+    body: 'Drag the dashed box over where you stand and swing; drag a corner to resize it.',
   },
   {
-    title: 'Just hit balls',
-    body:
-      'The camera is always recording. With Auto on, hitting a ball saves the swing and plays it back ' +
-      'in slow motion. Neighbours’ shots are ignored because nobody moved in your box.',
-  },
-  {
-    title: 'No ball? Save it yourself',
-    body:
-      'After a practice swing, tap SAVE (or press a volume button / Bluetooth remote) to keep the ' +
-      `last ${lookbackSec} seconds.`,
-  },
-  {
-    title: 'Tag it and review it',
-    body:
-      'Pick your club with the Club button; after each shot, tap what the ball did. Open a swing to ' +
-      'replay it slowly, draw on it, and compare it with your best.',
+    title: 'Hit balls',
+    body: `Hitting a ball saves the swing and replays it in slow motion. No ball? Tap SAVE to keep the last ${lookbackSec} seconds.`,
   },
 ];
 
@@ -58,7 +42,7 @@ export function CaptureHelp({
             </ThemedText>
             {steps(lookbackSec).map((step, i) => (
               <View key={step.title} style={styles.step}>
-                <View style={[styles.number, { backgroundColor: theme.accent }]}>
+                <View style={[styles.number, { backgroundColor: theme.backgroundElement }]}>
                   <ThemedText style={styles.numberText}>{i + 1}</ThemedText>
                 </View>
                 <View style={styles.stepText}>
@@ -76,8 +60,9 @@ export function CaptureHelp({
               onClose();
               router.push('/help');
             }}
+            hitSlop={8}
             style={({ pressed }) => [styles.link, { opacity: pressed ? 0.6 : 1 }]}>
-            <ThemedText style={{ color: theme.accent, fontWeight: '600' }}>More help & golf tips</ThemedText>
+            <ThemedText style={{ color: theme.textSecondary, fontWeight: '600' }}>More help</ThemedText>
           </Pressable>
           <Pressable
             accessibilityRole="button"
@@ -98,13 +83,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: Spacing.four,
   },
-  card: { borderRadius: Spacing.four, maxHeight: '85%', overflow: 'hidden' },
+  card: { borderRadius: Spacing.four, maxHeight: '85%', overflow: 'hidden', width: '100%', maxWidth: MAX_CONTENT_WIDTH, alignSelf: 'center' },
   link: { alignItems: 'center', paddingVertical: Spacing.two },
   content: { padding: Spacing.four, gap: Spacing.three },
   title: { fontSize: 26, lineHeight: 32 },
   step: { flexDirection: 'row', gap: Spacing.three },
   number: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  numberText: { color: '#fff', fontWeight: '700', fontSize: 14, lineHeight: 18 },
+  numberText: { fontWeight: '700', fontSize: 14, lineHeight: 18 },
   stepText: { flex: 1, gap: Spacing.half },
   button: {
     margin: Spacing.four,

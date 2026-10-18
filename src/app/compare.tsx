@@ -11,11 +11,15 @@ import { MaxFontScale, ThemedText } from '@/components/themed-text';
 import { Transport } from '@/components/transport';
 import { VideoPane } from '@/components/video-pane';
 import { Spacing } from '@/constants/theme';
+import { useLayout } from '@/hooks/use-layout';
 import { useLinkedPlayers } from '@/hooks/use-linked-players';
 import { useTheme } from '@/hooks/use-theme';
+import { DOCK_COLUMN_WIDTH } from '@/lib/layout';
 import { compareLink, nudgeStepMs, swingAnchorMs } from '@/lib/multicam';
+import { PHOTOS, SAVE_TO_PHOTOS } from '@/lib/photos-name';
+import { replayStartMs } from '@/lib/replay-start';
 import { saveSwingToPhotos, shareSwing } from '@/lib/swing-export';
-import { formatClipTime, type Swing } from '@/lib/swing-library';
+import { clipAspect, formatClipTime, type Swing } from '@/lib/swing-library';
 import { notesSummary } from '@/lib/swing-notes';
 import { getSwing } from '@/lib/swing-store';
 
@@ -36,10 +40,13 @@ const paneLabel = (s: Swing) => [formatClipTime(s.createdAt), notesSummary(s.not
 /** Two swings side by side, lined up on impact (or the trigger, for button saves). */
 function Compare({ a, b }: { a: Swing; b: Swing }) {
   const theme = useTheme();
+  const { isLarge, isLandscape } = useLayout();
+  /** As in review: on a tablet on its side the dock stands beside the videos. */
+  const dockAside = isLarge && isLandscape;
   const [nudgeMs, setNudgeMs] = useState(0);
   const [grid, setGrid] = useState(false);
   const [mirrored, setMirrored] = useState(false);
-  const [menu, setMenu] = useState(false);
+  const [sheet, setSheet] = useState<'menu' | 'align' | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** A Save / Share export is running; a second tap would start another. */
@@ -47,11 +54,7 @@ function Compare({ a, b }: { a: Swing; b: Swing }) {
   const busyRef = useRef(false);
   const link = useMemo(() => compareLink(a, b, nudgeMs), [a, b, nudgeMs]);
   const { player, playerB, isPlaying, rate, position, failed, failedB, pause, showAt, togglePlay, step, changeRate } =
-    useLinkedPlayers(
-    a.uri,
-    b.uri,
-    link
-  );
+    useLinkedPlayers(a.uri, b.uri, link, replayStartMs(a) / 1000);
   const duration = (a.durationMs ?? 0) / 1000 || player.duration || 0;
 
   const say = (message: string, sticky = false) => {
@@ -67,17 +70,17 @@ function Compare({ a, b }: { a: Swing; b: Swing }) {
   };
 
   const run = async (kind: 'save' | 'share') => {
-    setMenu(false);
+    setSheet(null);
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
     pause();
-    say(kind === 'save' ? 'Saving to your gallery…' : 'Preparing…', true);
+    say(kind === 'save' ? `Saving to your ${PHOTOS}…` : 'Preparing…', true);
     const source = { uri: a.uri, angle: { uri: b.uri, shiftMs: link.shiftSec * 1000 } };
     try {
       if (kind === 'save') {
         await saveSwingToPhotos(source);
-        say('Saved to your gallery, side by side.');
+        say(`Saved to your ${PHOTOS}, side by side.`);
       } else {
         await shareSwing(source);
         setNotice(null);
@@ -91,20 +94,22 @@ function Compare({ a, b }: { a: Swing; b: Swing }) {
   };
 
   const lined = a.impactOffsetMs != null && b.impactOffsetMs != null ? 'impact' : 'the save';
+  const nudgeLabel = `${nudgeMs > 0 ? '+' : ''}${nudgeMs.toFixed(1)} ms`;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, dockAside && styles.containerRow]}>
       <Stack.Screen
         options={{
           title: 'Compare',
           headerRight: () => (
-            <IconButton icon="ion:ellipsis-horizontal" accessibilityLabel="More" size={40} onPress={() => setMenu(true)} />
+            <IconButton icon="ion:ellipsis-horizontal" accessibilityLabel="More" size={40} onPress={() => setSheet('menu')} />
           ),
         }}
       />
       <View style={styles.videos}>
         <VideoPane
           player={player}
+          aspect={clipAspect(a)}
           label={paneLabel(a)}
           mirrored={mirrored}
           grid={grid}
@@ -113,6 +118,7 @@ function Compare({ a, b }: { a: Swing; b: Swing }) {
         />
         <VideoPane
           player={playerB}
+          aspect={clipAspect(b)}
           label={paneLabel(b)}
           mirrored={mirrored}
           grid={grid}
@@ -126,7 +132,9 @@ function Compare({ a, b }: { a: Swing; b: Swing }) {
         )}
       </View>
       <MaxFontScale.Provider value={DOCK_MAX_FONT_SCALE}>
-        <SafeAreaView edges={['bottom']} style={[styles.dock, { backgroundColor: theme.background }]}>
+        <SafeAreaView
+          edges={dockAside ? ['bottom', 'right'] : ['bottom']}
+          style={[styles.dock, dockAside && styles.dockAside, { backgroundColor: theme.background }]}>
           <Transport
             duration={duration}
             position={position}
@@ -139,28 +147,44 @@ function Compare({ a, b }: { a: Swing; b: Swing }) {
             onRate={changeRate}
             onPause={pause}
           />
-          <View style={styles.row}>
-            <Chip size="sm" icon="ion:caret-back" label="Earlier" onPress={() => nudge(-1)} accessibilityLabel="Move the right swing earlier" />
-            <ThemedText type="small" themeColor="textSecondary" style={styles.syncText} numberOfLines={1}>
-              {nudgeMs === 0 ? `Lined up on ${lined}` : `Right swing ${nudgeMs > 0 ? '+' : ''}${nudgeMs.toFixed(1)} ms`}
-            </ThemedText>
-            <Chip size="sm" icon="ion:caret-forward" label="Later" onPress={() => nudge(1)} accessibilityLabel="Move the right swing later" />
-          </View>
+          {/* Lining up lives in the ⋯ sheet, like review; this line just says where things stand. */}
+          <ThemedText type="small" themeColor="textSecondary" style={styles.syncText} numberOfLines={1}>
+            {nudgeMs === 0 ? `Lined up on ${lined}` : `Right swing ${nudgeLabel}`}
+          </ThemedText>
         </SafeAreaView>
       </MaxFontScale.Provider>
 
-      <Sheet visible={menu} onClose={() => setMenu(false)}>
+      <Sheet visible={sheet === 'menu'} onClose={() => setSheet(null)}>
         <SheetRow
           icon="ion:download-outline"
-          label="Save to Photos"
+          label={SAVE_TO_PHOTOS}
           detail={busy ? 'Working…' : 'Side by side'}
           disabled={busy || failed || failedB}
           onPress={() => run('save')}
         />
         <SheetRow icon="ion:share-outline" label="Share" disabled={busy || failed || failedB} onPress={() => run('share')} />
-        {nudgeMs !== 0 && <SheetRow icon="ion:refresh-outline" label="Line up on impact again" onPress={() => { setMenu(false); nudge(null); }} />}
+        <SheetRow
+          icon="ion:swap-horizontal-outline"
+          label="Line up the swings"
+          detail={nudgeMs === 0 ? undefined : nudgeLabel}
+          onPress={() => setSheet('align')}
+        />
         <SheetRow icon="mci:grid" label="Grid" checked={grid} onPress={() => setGrid((g) => !g)} />
         <SheetRow icon="mci:flip-horizontal" label="Mirror" checked={mirrored} onPress={() => setMirrored((m) => !m)} />
+      </Sheet>
+
+      <Sheet visible={sheet === 'align'} onClose={() => setSheet(null)} title="Line up the swings">
+        <View style={styles.sheetBody}>
+          <ThemedText type="small" themeColor="textSecondary">
+            Step to a clear moment (impact is best). If the right swing is a frame early or late, move it here.
+          </ThemedText>
+          <View style={styles.row}>
+            <Chip icon="ion:caret-back" label="Earlier" fill onPress={() => nudge(-1)} accessibilityLabel="Move the right swing earlier" />
+            <ThemedText style={styles.nudgeText}>{nudgeMs === 0 ? `On ${lined}` : nudgeLabel}</ThemedText>
+            <Chip icon="ion:caret-forward" label="Later" fill onPress={() => nudge(1)} accessibilityLabel="Move the right swing later" />
+          </View>
+          {nudgeMs !== 0 && <Chip variant="option" label="Line up on impact again" onPress={() => nudge(null)} />}
+        </View>
       </Sheet>
     </View>
   );
@@ -168,6 +192,7 @@ function Compare({ a, b }: { a: Swing; b: Swing }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
+  containerRow: { flexDirection: 'row' },
   videos: { flex: 1, flexDirection: 'row' },
   notice: { position: 'absolute', left: Spacing.three, right: Spacing.three, bottom: Spacing.three, alignItems: 'center' },
   noticeText: {
@@ -180,6 +205,9 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   dock: { paddingHorizontal: Spacing.three, paddingTop: Spacing.two, paddingBottom: Spacing.two, gap: Spacing.two },
+  dockAside: { width: DOCK_COLUMN_WIDTH, justifyContent: 'flex-end' },
   row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
-  syncText: { flex: 1, textAlign: 'center' },
+  syncText: { textAlign: 'center' },
+  sheetBody: { paddingHorizontal: Spacing.four, gap: Spacing.three, paddingBottom: Spacing.two },
+  nudgeText: { minWidth: 96, textAlign: 'center', fontWeight: '600' },
 });

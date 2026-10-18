@@ -33,16 +33,12 @@ final class ClockSync {
           let out = Self.sub(t2, t1), let back = Self.sub(t3, t4), let twice = Self.add(out, back)
     else { return false }
     let offset = twice / 2
-    // Results must stay usable: toPeer/toLocal add the offset to times on our clock.
+    // Results must stay usable: toPeer adds the offset to times on our clock.
     guard offset > Int64.min / 2, offset < Int64.max / 2 else { return false }
     if let best, abs(offset - best.offsetUs) > Self.jumpUs { samples.removeAll() }
     samples.append(Sample(offsetUs: offset, rttUs: rtt))
     if samples.count > maxSamples { samples.removeFirst(samples.count - maxSamples) }
     return true
-  }
-
-  func clear() {
-    samples.removeAll()
   }
 
   private var best: Sample? { samples.min { $0.rttUs < $1.rttUs } }
@@ -55,9 +51,6 @@ final class ClockSync {
 
   /// A time on our clock expressed on the peer's clock (nil before the first sample, or on overflow).
   func toPeer(_ localUs: Int64) -> Int64? { offsetUs.flatMap { Self.add(localUs, $0) } }
-
-  /// A time on the peer's clock expressed on ours (nil before the first sample, or on overflow).
-  func toLocal(_ peerUs: Int64) -> Int64? { offsetUs.flatMap { Self.sub(peerUs, $0) } }
 
   private static func add(_ a: Int64, _ b: Int64) -> Int64? {
     let (r, overflow) = a.addingReportingOverflow(b)

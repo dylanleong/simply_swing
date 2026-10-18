@@ -26,19 +26,21 @@ const MIN_DRAG = 0.02;
 /**
  * Lines, planes, circles and angles drawn over a clip, pinned to the picture (not the screen) so they
  * stay put across layouts. Interactive only while a [tool] is chosen. [mirrored] flips the drawing
- * with the video; shapes are stored unmirrored.
+ * with the video; shapes are stored unmirrored. [aspect] is the picture's width / height.
  */
 export function DrawingOverlay({
   shapes,
   tool,
   mirrored = false,
   grid = false,
+  aspect = CLIP_ASPECT,
   onAdd,
 }: {
   shapes: Shape[];
   tool: DrawTool | null;
   mirrored?: boolean;
   grid?: boolean;
+  aspect?: number;
   onAdd: (shape: Shape) => void;
 }) {
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -50,7 +52,7 @@ export function DrawingOverlay({
   const pendingAngle = tool === 'angle' ? halfAngle : null;
   // A ref, not state: a quick tap's release arrives before a re-render would expose it.
   const start = useRef<Point | null>(null);
-  const rect = fitRect(size.width, size.height);
+  const rect = fitRect(size.width, size.height, aspect);
 
   const toPoint = (e: GestureResponderEvent): Point => {
     const x = (e.nativeEvent.locationX - rect.x) / rect.width;
@@ -98,7 +100,7 @@ export function DrawingOverlay({
       setHalfAngle(null);
       return;
     }
-    if (Math.hypot((end[0] - from[0]) * CLIP_ASPECT, end[1] - from[1]) < MIN_DRAG) return;
+    if (Math.hypot((end[0] - from[0]) * aspect, end[1] - from[1]) < MIN_DRAG) return;
     if (tool === 'angle') {
       setHalfAngle({ vertex: from, a: end });
       return;
@@ -125,10 +127,10 @@ export function DrawingOverlay({
       <View style={StyleSheet.absoluteFill} pointerEvents="none">
         {grid && rect.width > 0 && <Grid rect={rect} />}
         {shapes.map((s, i) => (
-          <ShapeView key={i} shape={s} rect={rect} mirrored={mirrored} color={SHAPE_COLOR} />
+          <ShapeView key={i} shape={s} rect={rect} aspect={aspect} mirrored={mirrored} color={SHAPE_COLOR} />
         ))}
-        {pendingShape && <ShapeView shape={pendingShape} rect={rect} mirrored={mirrored} color={DRAFT_COLOR} />}
-        {draft && <ShapeView shape={draft} rect={rect} mirrored={mirrored} color={DRAFT_COLOR} />}
+        {pendingShape && <ShapeView shape={pendingShape} rect={rect} aspect={aspect} mirrored={mirrored} color={DRAFT_COLOR} />}
+        {draft && <ShapeView shape={draft} rect={rect} aspect={aspect} mirrored={mirrored} color={DRAFT_COLOR} />}
       </View>
     </View>
   );
@@ -155,7 +157,19 @@ function Grid({ rect }: { rect: Rect }) {
   return <>{lines}</>;
 }
 
-function ShapeView({ shape, rect, mirrored, color }: { shape: Shape; rect: Rect; mirrored: boolean; color: string }) {
+function ShapeView({
+  shape,
+  rect,
+  aspect,
+  mirrored,
+  color,
+}: {
+  shape: Shape;
+  rect: Rect;
+  aspect: number;
+  mirrored: boolean;
+  color: string;
+}) {
   const px = (p: Point): Point => [rect.x + (mirrored ? 1 - p[0] : p[0]) * rect.width, rect.y + p[1] * rect.height];
   switch (shape.kind) {
     case 'line':
@@ -185,7 +199,7 @@ function ShapeView({ shape, rect, mirrored, color }: { shape: Shape; rect: Rect;
     }
     case 'angle': {
       const v = px(shape.vertex);
-      const degrees = angleDegrees(shape, CLIP_ASPECT);
+      const degrees = angleDegrees(shape, aspect);
       return (
         <>
           <Segment from={v} to={px(shape.a)} color={color} />

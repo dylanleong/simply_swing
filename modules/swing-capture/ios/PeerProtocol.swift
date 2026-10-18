@@ -19,8 +19,9 @@ enum PeerMessage: Equatable {
   /// Save `startUs`...`endUs`; `anchorUs` is the impact (or button press) both clips are aligned on.
   case trigger(id: String, startUs: Int64, endUs: Int64, anchorUs: Int64)
   case reject(id: String, reason: String)
-  /// `anchorOffsetMs`: where the anchor instant falls in the clip (may lie outside it).
-  case clip(id: String, fps: Int, durationMs: Double, anchorOffsetMs: Double, size: Int64)
+  /// `anchorOffsetMs`: where the anchor instant falls in the clip (may lie outside it). `width` x
+  /// `height` is the clip's upright size; 0 from an app that didn't send it (assume portrait).
+  case clip(id: String, fps: Int, durationMs: Double, anchorOffsetMs: Double, size: Int64, width: Int, height: Int)
   case data(Data)
   case done(id: String)
   case bye
@@ -117,8 +118,11 @@ enum PeerProtocol {
       return (trigger, ["id": id, "startUs": startUs, "endUs": endUs, "anchorUs": anchorUs])
     case let .reject(id, reason):
       return (reject, ["id": id, "reason": reason])
-    case let .clip(id, fps, durationMs, anchorOffsetMs, size):
-      return (clip, ["id": id, "fps": fps, "durationMs": durationMs, "anchorOffsetMs": anchorOffsetMs, "size": size])
+    case let .clip(id, fps, durationMs, anchorOffsetMs, size, width, height):
+      return (clip, [
+        "id": id, "fps": fps, "durationMs": durationMs, "anchorOffsetMs": anchorOffsetMs, "size": size,
+        "width": width, "height": height,
+      ])
     case let .done(id):
       return (done, ["id": id])
     case .bye:
@@ -170,7 +174,9 @@ enum PeerProtocol {
         fps: Int(try int64("fps")),
         durationMs: try double("durationMs"),
         anchorOffsetMs: try double("anchorOffsetMs"),
-        size: try int64("size")
+        size: try int64("size"),
+        width: Int((try? int64("width")) ?? 0),
+        height: Int((try? int64("height")) ?? 0)
       )
     case done:
       return .done(id: try string("id"))

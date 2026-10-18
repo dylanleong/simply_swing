@@ -22,6 +22,14 @@ function readText(file: File): string | null {
   }
 }
 
+async function readTextAsync(file: File): Promise<string | null> {
+  try {
+    return file.exists ? await file.text() : null;
+  } catch {
+    return null;
+  }
+}
+
 function exists(file: File): boolean {
   try {
     return file.exists;
@@ -38,18 +46,35 @@ function sizeOf(file: File): number | null {
   }
 }
 
+/** The files a swing is built from, read once; `readSwing` / `readSwingAsync` differ only in how. */
+function buildSwing(dir: Directory, files: SwingFileSet, json: string | null, angleJson: string | null, notes: string | null) {
+  const { id } = files;
+  const angleFile: AngleFile | null = files.angleClip
+    ? { sidecarJson: angleJson, sizeBytes: sizeOf(new File(dir, `${id}.b.mp4`)) }
+    : null;
+  return parseSwing(`${id}.mp4`, dir.uri, json, files.thumb, sizeOf(new File(dir, `${id}.mp4`)), angleFile, notes);
+}
+
 function readSwing(dir: Directory, files: SwingFileSet): Swing | null {
   const { id } = files;
-  const clip = new File(dir, `${id}.mp4`);
-  const json = files.sidecar ? readText(new File(dir, `${id}.json`)) : null;
-  const angleFile: AngleFile | null = files.angleClip
-    ? {
-        sidecarJson: files.angleSidecar ? readText(new File(dir, `${id}.b.json`)) : null,
-        sizeBytes: sizeOf(new File(dir, `${id}.b.mp4`)),
-      }
-    : null;
-  const notes = files.notes ? readText(new File(dir, `${id}.user.json`)) : null;
-  return parseSwing(`${id}.mp4`, dir.uri, json, files.thumb, sizeOf(clip), angleFile, notes);
+  return buildSwing(
+    dir,
+    files,
+    files.sidecar ? readText(new File(dir, `${id}.json`)) : null,
+    files.angleClip && files.angleSidecar ? readText(new File(dir, `${id}.b.json`)) : null,
+    files.notes ? readText(new File(dir, `${id}.user.json`)) : null
+  );
+}
+
+/** Reads the sidecars off the JS thread (`File.text()`), for the library's long list. */
+async function readSwingAsync(dir: Directory, files: SwingFileSet): Promise<Swing | null> {
+  const { id } = files;
+  const [json, angleJson, notes] = await Promise.all([
+    files.sidecar ? readTextAsync(new File(dir, `${id}.json`)) : null,
+    files.angleClip && files.angleSidecar ? readTextAsync(new File(dir, `${id}.b.json`)) : null,
+    files.notes ? readTextAsync(new File(dir, `${id}.user.json`)) : null,
+  ]);
+  return buildSwing(dir, files, json, angleJson, notes);
 }
 
 function deleteFile(file: File): boolean {
@@ -61,19 +86,44 @@ function deleteFile(file: File): boolean {
   }
 }
 
-/** All saved swings, newest first. Cleans up leftovers of deleted swings and failed transfers on the way. */
-export function listSwings(): Swing[] {
-  const dir = swingsDir();
-  let names: string[];
+/*
+ * The library is read on every visit to Swings, Settings and "compare with". Nothing changes between
+ * visits unless the engine saved a clip (new files: the folder's modification time moves) or this
+ * module wrote a sidecar (it drops the cache itself), so the parsed list is kept until then.
+ */
+let cache: { key: string; swings: Swing[] } | null = null;
+
+/** Called after every write from this module; native writes always add files, which the key sees. */
+function invalidateLibrary() {
+  cache = null;
+}
+
+/** The folder's modification time plus its listing; null when the time can't be read (then nothing is cached). */
+function libraryKey(dir: Directory, names: readonly string[]): string | null {
   try {
-    if (!dir.exists) return [];
-    names = dir
+    const t = dir.info().modificationTime;
+    return t == null ? null : `${t}|${names.join(',')}`;
+  } catch {
+    return null;
+  }
+}
+
+/** The folder's listing and what to do with it, or null when the folder is missing / unreadable. */
+function planLibrary(): { dir: Directory; names: string[]; key: string | null } | null {
+  const dir = swingsDir();
+  try {
+    if (!dir.exists) return null;
+    const names = dir
       .list()
       .filter((f): f is File => f instanceof File)
       .map((f) => f.name);
+    return { dir, names, key: libraryKey(dir, names) };
   } catch {
-    return [];
+    return null;
   }
+}
+
+function swingDirPlan(dir: Directory, names: readonly string[]) {
   const plan = planSwingDir(names, (name) => {
     try {
       return new File(dir, name).lastModified;
@@ -82,12 +132,50 @@ export function listSwings(): Swing[] {
     }
   });
   for (const name of plan.leftovers) deleteFile(new File(dir, name));
+  return plan;
+}
+
+const newestFirst = (swings: Swing[]) => swings.sort((a, b) => b.createdAt - a.createdAt);
+
+/** All saved swings, newest first. Cleans up leftovers of deleted swings and failed transfers on the way. */
+export function listSwings(): Swing[] {
+  const listing = planLibrary();
+  if (!listing) return [];
+  if (cache && listing.key != null && cache.key === listing.key) return cache.swings;
+  const plan = swingDirPlan(listing.dir, listing.names);
   const swings: Swing[] = [];
   for (const files of plan.swings) {
-    const swing = readSwing(dir, files);
+    const swing = readSwing(listing.dir, files);
     if (swing) swings.push(swing);
   }
-  return swings.sort((a, b) => b.createdAt - a.createdAt);
+  newestFirst(swings);
+  if (listing.key != null && plan.leftovers.length === 0) cache = { key: listing.key, swings };
+  return swings;
+}
+
+/** How many swings' sidecars are read before giving the UI a turn. */
+const ASYNC_BATCH = 8;
+
+/**
+ * `listSwings` for screens: the same list, with the sidecars read off the JS thread in batches so a
+ * library of hundreds of swings doesn't freeze the tab while it opens. Same cache, same order.
+ */
+export async function listSwingsAsync(): Promise<Swing[]> {
+  const listing = planLibrary();
+  if (!listing) return [];
+  if (cache && listing.key != null && cache.key === listing.key) return cache.swings;
+  const plan = swingDirPlan(listing.dir, listing.names);
+  const swings: Swing[] = [];
+  for (let i = 0; i < plan.swings.length; i += ASYNC_BATCH) {
+    const batch = await Promise.all(plan.swings.slice(i, i + ASYNC_BATCH).map((files) => readSwingAsync(listing.dir, files)));
+    for (const swing of batch) if (swing) swings.push(swing);
+  }
+  newestFirst(swings);
+  // Another read may have filled the cache meanwhile; the folder can't have changed if the key still matches.
+  if (listing.key != null && plan.leftovers.length === 0 && libraryKey(listing.dir, listing.names) === listing.key) {
+    cache = { key: listing.key, swings };
+  }
+  return swings;
 }
 
 /** One swing, reading only its own files; null if it doesn't exist (or [id] isn't a swing id, from a deep link). */
@@ -119,6 +207,7 @@ export function setAngleNudge(id: string, nudgeMs: number): boolean {
   }
   try {
     sidecar.write(JSON.stringify({ ...meta, nudgeMs }));
+    invalidateLibrary();
     return true;
   } catch {
     return false;
@@ -131,6 +220,7 @@ export function updateSwingNotes(id: string, patch: Partial<SwingNotes>): SwingN
   const next = { ...parseNotes(readText(file)), ...patch };
   try {
     file.write(JSON.stringify(next));
+    invalidateLibrary();
     return next;
   } catch {
     return null;
@@ -144,6 +234,7 @@ export function deleteSwing(id: string): boolean {
 
 export function deleteSwings(ids: readonly string[]): boolean {
   const dir = swingsDir();
+  invalidateLibrary();
   let ok = true;
   for (const id of ids) {
     if (!isSwingId(id)) continue;

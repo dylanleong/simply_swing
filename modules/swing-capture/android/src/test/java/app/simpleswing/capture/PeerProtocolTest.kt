@@ -29,6 +29,7 @@ class PeerProtocolTest {
       PeerMessage.Trigger("swing_1760270000000", 7_000_000, 11_500_000, 10_000_000),
       PeerMessage.Reject("swing_1", "busy"),
       PeerMessage.Clip("swing_1", 120, 4500.5, 3000.25, 28_000_000),
+      PeerMessage.Clip("swing_2", 120, 4500.5, 3000.25, 28_000_000, 1920, 1080),
       PeerMessage.Done("swing_1"),
       PeerMessage.Bye,
     )

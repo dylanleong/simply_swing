@@ -33,11 +33,32 @@ export function smoothTilt(prev: Tilt | null, next: Tilt, alpha = 0.2): Tilt {
   };
 }
 
-/** What to tell the golfer, or null when the phone is level. */
-export function levelAdvice(t: Tilt): string | null {
+/** Sideways roll from here up (near ±90°) is a phone mounted landscape, not one being carried. */
+export const LANDSCAPE_ROLL_DEG = 60;
+
+/**
+ * The tilt in the screen's frame. The accelerometer reads device axes, so on a tablet turned to
+ * landscape a perfectly level mount reads as ±90° of roll; what the golfer needs is how far it is
+ * from that. Portrait screens are the device frame already.
+ */
+export function tiltForScreen(t: Tilt, landscape: boolean): Tilt {
+  if (!landscape) return t;
+  // VERIFY on a tablet: the sign decides which way the horizon bar leans; flip it here if it's backwards.
+  const roll = Math.sign(t.rollDeg || 1) * (Math.abs(t.rollDeg) - 90);
+  return { rollDeg: roll, pitchDeg: t.pitchDeg };
+}
+
+/**
+ * What to tell the golfer, or null when the device is level. [landscape] is the screen's
+ * orientation: a large screen on its side is a landscape mount, not a phone that needs turning.
+ */
+export function levelAdvice(t: Tilt, landscape = false): string | null {
   const roll = Math.abs(t.rollDeg);
-  if (roll > 45 || t.pitchDeg > 45) return null; // Lying flat or sideways: being carried, not set up.
-  if (roll > ROLL_TOLERANCE_DEG) return `Tilted ${Math.round(roll)}° sideways: straighten the phone`;
+  if (t.pitchDeg > 45) return null; // Lying flat: being carried, not set up.
+  // A phone's preview and golfer box are portrait; a landscape mount is on its side, not just tilted.
+  if (roll >= LANDSCAPE_ROLL_DEG) return landscape ? null : 'Mount the phone upright';
+  if (roll > 45) return null; // Half way over: in hand.
+  if (roll > ROLL_TOLERANCE_DEG) return `Tilted ${Math.round(roll)}° sideways: straighten the ${landscape ? 'tablet' : 'phone'}`;
   if (t.pitchDeg > PITCH_TOLERANCE_DEG) return `Aimed ${Math.round(t.pitchDeg)}° off level: point it straight at the golfer`;
   return null;
 }

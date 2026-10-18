@@ -117,7 +117,9 @@ def send_clip(link: Link, trig: dict, clip: bytes) -> None:
     time.sleep(max(0, (trig['endUs'] - now_us()) / 1e6) + 0.3)
     anchor_offset_ms = (trig['anchorUs'] - trig['startUs']) / 1000
     duration_ms = (trig['endUs'] - trig['startUs']) / 1000
-    link.send(CLIP, dict(id=trig['id'], fps=120, durationMs=duration_ms, anchorOffsetMs=anchor_offset_ms, size=len(clip)))
+    # width/height: the clip's upright size (the sample clip is a portrait phone clip).
+    link.send(CLIP, dict(id=trig['id'], fps=120, durationMs=duration_ms, anchorOffsetMs=anchor_offset_ms, size=len(clip),
+                         width=1080, height=1920))
     for i in range(0, len(clip), CHUNK):
         link.send(DATA, clip[i:i + CHUNK])
     link.send(DONE, dict(id=trig['id']))
@@ -191,7 +193,8 @@ def run_main(args) -> None:
             secs = time.monotonic() - incoming['started']
             ok = 'OK' if len(data) == meta['size'] else f'SIZE MISMATCH ({len(data)} != {meta["size"]})'
             print(f'main: got {path}: {len(data) // 1024} KB in {secs:.1f} s, {meta["fps"]} fps, '
-                  f'{meta["durationMs"]:.0f} ms, anchor at {meta["anchorOffsetMs"]:.0f} ms — {ok}')
+                  f'{meta["durationMs"]:.0f} ms, anchor at {meta["anchorOffsetMs"]:.0f} ms, '
+                  f'{meta.get("width", 0)}x{meta.get("height", 0)} — {ok}')
             incoming = None
         elif kind == BYE:
             print('main: camera left')

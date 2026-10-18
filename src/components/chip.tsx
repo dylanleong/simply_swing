@@ -26,6 +26,7 @@ export function Chip({
   fill = false,
   style,
   accessibilityLabel,
+  hitSlop,
 }: {
   label: string;
   onPress: () => void;
@@ -38,6 +39,8 @@ export function Chip({
   fill?: boolean;
   style?: StyleProp<ViewStyle>;
   accessibilityLabel?: string;
+  /** For a small chip that stands alone (not in a row of them): reach 44 pt without growing. */
+  hitSlop?: number;
 }) {
   const theme = useTheme();
   let background: string = theme.backgroundElement;
@@ -67,6 +70,7 @@ export function Chip({
       accessibilityState={variant === 'option' ? { selected } : undefined}
       accessibilityLabel={accessibilityLabel ?? label}
       onPress={onPress}
+      hitSlop={hitSlop}
       style={({ pressed }) => [
         styles.chip,
         styles[size],
@@ -76,7 +80,11 @@ export function Chip({
       ]}>
       <View style={styles.content}>
         {icon && <Icon name={icon} size={size === 'sm' ? 16 : 18} color={color} />}
-        <ThemedText numberOfLines={1} style={[styles.text, size === 'sm' && styles.smallText, { color }]}>
+        {/* A filled chip's label spans the chip and centres itself: its width then never depends on a
+            text measurement, which Android has got wrong for one word after a rotation ("Pus"). */}
+        <ThemedText
+          numberOfLines={1}
+          style={[styles.text, size === 'sm' && styles.smallText, fill && !icon && styles.fillText, { color }]}>
           {label}
         </ThemedText>
       </View>
@@ -90,7 +98,8 @@ const styles = StyleSheet.create({
   md: { minHeight: 40, paddingHorizontal: Spacing.three },
   lg: { minHeight: 48, paddingHorizontal: Spacing.three, borderRadius: Spacing.three },
   fill: { flex: 1, paddingHorizontal: Spacing.one },
-  content: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one + 2 },
+  fillText: { flexGrow: 1, textAlign: 'center' },
+  content: { flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch', justifyContent: 'center', gap: Spacing.one + 2 },
   text: { fontSize: 15, lineHeight: 20, fontWeight: '600' },
   smallText: { fontSize: 13, lineHeight: 18 },
 });

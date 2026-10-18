@@ -12,6 +12,10 @@ android {
     versionCode 1
     versionName "0.1.0"
   }
+  buildFeatures {
+    // BuildConfig.DEBUG gates the per-frame logging in CaptureEngine.
+    buildConfig true
+  }
   lintOptions {
     abortOnError false
   }

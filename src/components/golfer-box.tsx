@@ -97,7 +97,8 @@ export function GolferBox({ frame, bounds, roi, onChange, active, activeColor }:
     <>
       <GestureDetector gesture={move}>
         <Animated.View
-          accessibilityLabel="Golfer box. Drag to move."
+          accessible
+          accessibilityLabel="Golfer box. Drag to move it; drag a corner to resize it."
           style={[styles.box, active && { borderColor: activeColor }, boxStyle]}>
           <Text style={[styles.label, active && { color: activeColor }]}>{active ? 'Swing seen' : 'Golfer box'}</Text>
         </Animated.View>
@@ -150,7 +151,8 @@ function Corner({
   });
   return (
     <GestureDetector gesture={gesture}>
-      <Animated.View accessibilityLabel="Resize golfer box" style={[styles.handle, style]}>
+      {/* The box itself is the accessible element; the four corners are only for fingers. */}
+      <Animated.View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[styles.handle, style]}>
         <Animated.View style={styles.dot} />
       </Animated.View>
     </GestureDetector>

@@ -6,12 +6,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { useLayout } from '@/hooks/use-layout';
 import { useTheme } from '@/hooks/use-theme';
 import { HELP_TOPICS, helpTopic, type HelpTopicId } from '@/lib/help-topics';
 
 /** Help & tips, by topic. Opened with `?topic=<id>` it starts on that topic, open. */
 export default function HelpScreen() {
   const theme = useTheme();
+  const { contentWidth } = useLayout();
   const { topic } = useLocalSearchParams<{ topic?: string }>();
   const [open, setOpen] = useState<HelpTopicId | null>(() => helpTopic(topic)?.id ?? null);
   // A linked topic goes first so it's on screen without scrolling.
@@ -21,7 +23,7 @@ export default function HelpScreen() {
     <ThemedView style={styles.container}>
       <Stack.Screen options={{ title: 'Help & tips' }} />
       <SafeAreaView style={styles.container} edges={['bottom']}>
-        <ScrollView contentContainerStyle={styles.content}>
+        <ScrollView contentContainerStyle={[styles.content, { width: contentWidth, alignSelf: 'center' }]}>
           {topics.map((t) => {
             const expanded = open === t.id;
             return (

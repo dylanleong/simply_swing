@@ -135,7 +135,7 @@ export function extendToEdges(a: Point, b: Point): [Point, Point] {
   ];
 }
 
-/** Every clip SimpleSwing records is portrait 9:16, on both platforms. */
+/** The clip shape before sidecars carried a size: portrait 9:16 from a phone (see swing-library's clipAspect). */
 export const CLIP_ASPECT = 9 / 16;
 
 export type Rect = { x: number; y: number; width: number; height: number };

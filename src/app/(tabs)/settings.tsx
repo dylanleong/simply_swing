@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -8,6 +8,7 @@ import { Segmented } from '@/components/segmented';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { useLayout } from '@/hooks/use-layout';
 import { useTheme } from '@/hooks/use-theme';
 import {
   AUTO_DELETE_OPTIONS,
@@ -18,9 +19,10 @@ import {
   type Sensitivity,
 } from '@/lib/capture-settings';
 import { loadCaptureSettings, saveCaptureSettings } from '@/lib/capture-settings-store';
+import { PHOTOS } from '@/lib/photos-name';
 import { formatBytes, pruneQuestion, swingsToPrune } from '@/lib/swing-library';
 import { alertDeleteFailed } from '@/lib/storage-alert';
-import { listSwings, pruneOldSwings } from '@/lib/swing-store';
+import { listSwings, listSwingsAsync, pruneOldSwings } from '@/lib/swing-store';
 import SwingCapture from '../../../modules/swing-capture';
 
 const SENSITIVITY_HELP: Record<Sensitivity, string> = {
@@ -31,13 +33,21 @@ const SENSITIVITY_HELP: Record<Sensitivity, string> = {
 
 export default function SettingsScreen() {
   const theme = useTheme();
+  const { contentWidth } = useLayout();
   const [settings, setSettings] = useState<CaptureSettings>(loadCaptureSettings);
   const [supportedFps, setSupportedFps] = useState<number[] | null>(null);
   const [storage, setStorage] = useState({ count: 0, bytes: 0 });
+  /** Watch and the second camera are set up once, so they sit folded away. */
+  const [devicesOpen, setDevicesOpen] = useState(false);
+  const storageSeq = useRef(0);
 
+  // Off the JS thread: the whole library is read for the total.
   const refreshStorage = useCallback(() => {
-    const swings = listSwings();
-    setStorage({ count: swings.length, bytes: swings.reduce((sum, s) => sum + (s.sizeBytes ?? 0), 0) });
+    const seq = ++storageSeq.current;
+    listSwingsAsync().then((swings) => {
+      if (seq !== storageSeq.current) return;
+      setStorage({ count: swings.length, bytes: swings.reduce((sum, s) => sum + (s.sizeBytes ?? 0), 0) });
+    });
   }, []);
 
   useFocusEffect(
@@ -80,7 +90,8 @@ export default function SettingsScreen() {
   return (
     <ThemedView style={styles.container}>
       <SafeAreaView style={styles.container} edges={['top']}>
-        <ScrollView contentContainerStyle={styles.content}>
+        {/* A readable column on a tablet, centred, rather than switches a screen's width from their labels. */}
+        <ScrollView contentContainerStyle={[styles.content, { width: contentWidth, alignSelf: 'center' }]}>
           <ThemedText type="subtitle">Settings</ThemedText>
 
           <Section title="Recording">
@@ -142,55 +153,6 @@ export default function SettingsScreen() {
             </Setting>
           </Section>
 
-          <Section title="Watch">
-            <Setting
-              label="Use the watch to"
-              help={
-                settings.watchMode === 'auto'
-                  ? 'Open SimpleSwing on your watch. It senses your swing on the wrist, so only your own shots save, even at a busy range.'
-                  : settings.watchMode === 'tap'
-                    ? 'The watch is a remote: tap SAVE after your swing.'
-                    : 'The watch is ignored.'
-              }>
-              <Segmented
-                accessibilityLabel="Watch mode"
-                value={settings.watchMode}
-                onChange={(watchMode) => update({ watchMode })}
-                options={[
-                  { value: 'auto', label: 'Sense swings' },
-                  { value: 'tap', label: 'Tap to save' },
-                  { value: 'off', label: 'Off' },
-                ]}
-              />
-            </Setting>
-            <Setting
-              inline
-              label="Save practice swings"
-              help="Save swings without a ball too (sensed on the wrist, no impact sound needed).">
-              <Switch
-                value={settings.savePracticeSwings && settings.watchMode === 'auto'}
-                disabled={settings.watchMode !== 'auto'}
-                onValueChange={(savePracticeSwings) => update({ savePracticeSwings })}
-              />
-            </Setting>
-          </Section>
-
-          <Section title="Second camera">
-            <Setting
-              label="Film a second angle"
-              help="Use another phone with SimpleSwing as a second camera, face on or down the line. On the phone you swing with, tap + Cam on the Capture screen; every swing it saves is filmed from both.">
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => router.push('/camera-mode')}
-                style={({ pressed }) => [
-                  styles.button,
-                  { backgroundColor: theme.backgroundElement, opacity: pressed ? 0.7 : 1 },
-                ]}>
-                <ThemedText>Use this phone as the camera</ThemedText>
-              </Pressable>
-            </Setting>
-          </Section>
-
           <Section title="Battery">
             <Setting inline label="Dim screen between shots" help="After 30 seconds with nobody moving in the golfer box.">
               <Switch value={settings.dimScreen} onValueChange={(dimScreen) => update({ dimScreen })} />
@@ -209,7 +171,7 @@ export default function SettingsScreen() {
                 ? 'No swings saved.'
                 : `${storage.count} swing${storage.count === 1 ? '' : 's'} · ${formatBytes(storage.bytes)} on this phone`}
             </ThemedText>
-            <Setting label="Delete swings older than" help="Favourites are never deleted, and swings you saved to Photos stay there.">
+            <Setting label="Delete swings older than" help={`Favourites are never deleted, and swings you saved to your ${PHOTOS} stay there.`}>
               <Segmented
                 accessibilityLabel="Delete swings older than"
                 value={settings.autoDeleteDays}
@@ -217,6 +179,72 @@ export default function SettingsScreen() {
                 options={AUTO_DELETE_OPTIONS.map((d) => ({ value: d, label: d === 0 ? 'Never' : `${d} days` }))}
               />
             </Setting>
+          </Section>
+
+          <Section title="Devices">
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: devicesOpen }}
+              onPress={() => setDevicesOpen((v) => !v)}
+              style={({ pressed }) => [
+                styles.button,
+                styles.expander,
+                { backgroundColor: theme.backgroundElement, opacity: pressed ? 0.7 : 1 },
+              ]}>
+              <ThemedText>Watch and second camera</ThemedText>
+              <ThemedText themeColor="textSecondary">{devicesOpen ? '▲' : '▼'}</ThemedText>
+            </Pressable>
+            {devicesOpen && (
+              <View style={styles.devices}>
+                  <ThemedText type="smallBold">Watch</ThemedText>
+                <Setting
+                  label="Use the watch to"
+                  help={
+                    settings.watchMode === 'auto'
+                      ? 'Open SimpleSwing on your watch. It senses your swing on the wrist, so only your own shots save, even at a busy range.'
+                      : settings.watchMode === 'tap'
+                        ? 'The watch is a remote: tap SAVE after your swing.'
+                        : 'The watch is ignored.'
+                  }>
+                  <Segmented
+                    accessibilityLabel="Watch mode"
+                    value={settings.watchMode}
+                    onChange={(watchMode) => update({ watchMode })}
+                    options={[
+                      { value: 'auto', label: 'Sense swings' },
+                      { value: 'tap', label: 'Tap to save' },
+                      { value: 'off', label: 'Off' },
+                    ]}
+                  />
+                </Setting>
+                <Setting
+                  inline
+                  label="Save practice swings"
+                  help="Save swings without a ball too (sensed on the wrist, no impact sound needed).">
+                  <Switch
+                    value={settings.savePracticeSwings && settings.watchMode === 'auto'}
+                    disabled={settings.watchMode !== 'auto'}
+                    onValueChange={(savePracticeSwings) => update({ savePracticeSwings })}
+                  />
+                </Setting>
+                <ThemedText type="smallBold" style={styles.subheading}>
+                  Second camera
+                </ThemedText>
+                <Setting
+                  label="Film a second angle"
+                  help="Use another phone with SimpleSwing as a second camera, face on or down the line. On the phone you swing with, tap the camera icon at the top of Capture; every swing it saves is filmed from both.">
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => router.push('/camera-mode')}
+                    style={({ pressed }) => [
+                      styles.button,
+                      { backgroundColor: theme.backgroundElement, opacity: pressed ? 0.7 : 1 },
+                    ]}>
+                    <ThemedText>Use this phone as the camera</ThemedText>
+                  </Pressable>
+                </Setting>
+              </View>
+            )}
           </Section>
 
           <Section title="Help">
@@ -297,5 +325,8 @@ const styles = StyleSheet.create({
   inlineLabel: { flex: 1 },
   stacked: { gap: Spacing.two },
   button: { paddingVertical: Spacing.three, borderRadius: Spacing.three, alignItems: 'center' },
+  expander: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: Spacing.three },
+  devices: { gap: Spacing.three, paddingTop: Spacing.one },
+  subheading: { paddingTop: Spacing.two },
   about: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: Spacing.three, gap: Spacing.one },
 });

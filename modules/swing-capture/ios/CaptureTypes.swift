@@ -189,7 +189,3 @@ final class StorageFullException: Exception {
 final class CaptureException: GenericException<String> {
   override var reason: String { param }
 }
-
-final class NotSupportedException: Exception {
-  override var reason: String { "This feature is not supported on this device" }
-}

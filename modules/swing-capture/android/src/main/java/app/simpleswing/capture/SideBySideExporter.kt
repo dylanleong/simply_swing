@@ -36,11 +36,14 @@ import kotlin.math.roundToInt
  * draws them into the encoder's input surface. Audio is dropped, as in the single-angle export.
  */
 object SideBySideExporter {
-  private const val PANEL_W = 720
-  private const val PANEL_H = 1280
-  private const val GAP = 16
-  private const val OUT_W = PANEL_W * 2 + GAP
-  private const val OUT_H = PANEL_H
+  const val GAP = 16
+  /** Panel height for portrait clips (phones) and for two landscape clips (a tablet on its side). */
+  private const val PORTRAIT_PANEL_H = 1280
+  private const val LANDSCAPE_PANEL_H = 720
+  /** Widest frame any common encoder takes (4K); two landscape panels are shrunk to fit it. */
+  private const val MAX_OUT_W = 4096
+  /** Encoders want even sizes, and some only multiples of 16. */
+  private const val ALIGN = 16
   private const val MIME = MediaFormat.MIMETYPE_VIDEO_AVC
   private const val TIMEOUT_US = 10_000L
   /** Short waits while the codecs still have work queued; long ones only at end of stream. */
@@ -67,6 +70,8 @@ object SideBySideExporter {
     var frames = 0
     val callbacks = HandlerThread("SwingSideBySideFrames").apply { start() }
     val probe = FrameSource.probe(main)
+    val probeB = FrameSource.probe(angle)
+    val panels = Panels.fit(probe.displayWidth, probe.displayHeight, probeB.displayWidth, probeB.displayHeight)
     val outFps = (probe.fps / factor).roundToInt().coerceAtLeast(1)
     val encoder = MediaCodec.createEncoderByType(MIME)
     var egl: Egl? = null
@@ -75,9 +80,9 @@ object SideBySideExporter {
     var muxer: MediaMuxer? = null
     try {
       encoder.configure(
-        MediaFormat.createVideoFormat(MIME, OUT_W, OUT_H).apply {
+        MediaFormat.createVideoFormat(MIME, panels.outW, panels.outH).apply {
           setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-          setInteger(MediaFormat.KEY_BIT_RATE, bitrate(outFps))
+          setInteger(MediaFormat.KEY_BIT_RATE, bitrate(panels, outFps))
           setInteger(MediaFormat.KEY_FRAME_RATE, outFps)
           setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         },
@@ -96,11 +101,11 @@ object SideBySideExporter {
       while (left.next()) {
         val tA = left.currentUs
         right.showAt(tA + shiftUs)
-        GLES20.glViewport(0, 0, OUT_W, OUT_H)
+        GLES20.glViewport(0, 0, panels.outW, panels.outH)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        drawer.draw(left, 0)
-        drawer.draw(right, PANEL_W + GAP)
+        drawer.draw(left, 0, panels)
+        drawer.draw(right, panels.panelW + GAP, panels)
         egl.swap(tA * factor * 1000)
         drain.drain(endOfStream = false)
         frames++
@@ -109,7 +114,7 @@ object SideBySideExporter {
       if (!drain.started) throw CaptureException("E_EXPORT", "No frames to export in ${main.name}")
       mux.stop()
       if (!part.renameTo(dst)) throw CaptureException("E_EXPORT", "Couldn't save the side-by-side video")
-      Log.i(TAG, "Exported $frames frames side by side in ${SystemClock.elapsedRealtime() - startedMs} ms")
+      Log.i(TAG, "Exported $frames frames side by side (${panels.outW}x${panels.outH}) in ${SystemClock.elapsedRealtime() - startedMs} ms")
     } finally {
       left?.release()
       right?.release()
@@ -123,11 +128,43 @@ object SideBySideExporter {
   }
 
   /** ~0.2 bits per pixel: plenty for slow motion, small enough to share. */
-  private fun bitrate(fps: Int) = (OUT_W.toLong() * OUT_H * fps / 5).coerceIn(6_000_000, 30_000_000).toInt()
+  private fun bitrate(panels: Panels, fps: Int) =
+    (panels.outW.toLong() * panels.outH * fps / 5).coerceIn(6_000_000, 30_000_000).toInt()
+
+  /** The two panels and the frame around them, sized for the clips being exported. */
+  class Panels(val panelW: Int, val panelH: Int) {
+    val outW = panelW * 2 + GAP
+    val outH = panelH
+
+    companion object {
+      /**
+       * Portrait clips get 720x1280 panels as before. A landscape clip (a tablet on its side) needs a
+       * wide panel: 720 tall when both are landscape, else as tall as the portrait one; and two wide
+       * panels are shrunk together so the whole frame stays within [MAX_OUT_W].
+       */
+      fun fit(aW: Int, aH: Int, bW: Int, bH: Int): Panels {
+        val anyPortrait = aH > aW || bH > bW
+        var panelH = if (anyPortrait) PORTRAIT_PANEL_H else LANDSCAPE_PANEL_H
+        var panelW = maxOf(aspect(aW, aH), aspect(bW, bH)).let { (panelH * it).roundToInt() }
+        val maxPanelW = (MAX_OUT_W - GAP) / 2
+        if (panelW > maxPanelW) {
+          panelH = (panelH.toLong() * maxPanelW / panelW).toInt()
+          panelW = maxPanelW
+        }
+        return Panels(align(panelW), align(panelH))
+      }
+
+      /** Width over height; a clip with no readable size counts as portrait 9:16. */
+      private fun aspect(w: Int, h: Int) = if (w > 0 && h > 0) w.toDouble() / h else 9.0 / 16
+
+      private fun align(n: Int) = (n / ALIGN * ALIGN).coerceAtLeast(ALIGN)
+    }
+  }
 
   /** One clip decoding into a SurfaceTexture, a frame at a time, on the export thread. */
   private class FrameSource(file: File, val textureId: Int, callbacks: Handler) {
-    class Probe(val fps: Double)
+    /** Frame rate and upright size, read without starting a decoder. */
+    class Probe(val fps: Double, val displayWidth: Int, val displayHeight: Int)
 
     companion object {
       fun probe(file: File): Probe {
@@ -136,10 +173,17 @@ object SideBySideExporter {
           extractor.setDataSource(file.path)
           val format = extractor.getTrackFormat(videoTrack(extractor, file))
           val fps = format.getNumber(MediaFormat.KEY_FRAME_RATE)?.toDouble() ?: 120.0
-          return Probe(fps)
+          val (w, h) = uprightSize(format)
+          return Probe(fps, w, h)
         } finally {
           extractor.release()
         }
+      }
+
+      /** The stored size with the rotation hint applied. */
+      fun uprightSize(format: MediaFormat): Pair<Int, Int> {
+        val rotation = if (format.containsKey(MediaFormat.KEY_ROTATION)) format.getInteger(MediaFormat.KEY_ROTATION) else 0
+        return Orientation.uprightSize(format.getInteger(MediaFormat.KEY_WIDTH), format.getInteger(MediaFormat.KEY_HEIGHT), rotation)
       }
 
       fun videoTrack(extractor: MediaExtractor, file: File) = (0 until extractor.trackCount).firstOrNull {
@@ -176,10 +220,9 @@ object SideBySideExporter {
       val format = extractor.getTrackFormat(track)
       extractor.selectTrack(track)
       rotation = if (format.containsKey(MediaFormat.KEY_ROTATION)) format.getInteger(MediaFormat.KEY_ROTATION) else 0
-      val w = format.getInteger(MediaFormat.KEY_WIDTH)
-      val h = format.getInteger(MediaFormat.KEY_HEIGHT)
-      displayWidth = if (rotation % 180 == 0) w else h
-      displayHeight = if (rotation % 180 == 0) h else w
+      val (w, h) = uprightSize(format)
+      displayWidth = w
+      displayHeight = h
       // Rotation is applied when drawing, so the texture always holds the frame as stored.
       format.setInteger(MediaFormat.KEY_ROTATION, 0)
       texture.setOnFrameAvailableListener({
@@ -320,12 +363,12 @@ object SideBySideExporter {
       return ids[0]
     }
 
-    fun draw(source: FrameSource, panelX: Int) {
+    fun draw(source: FrameSource, panelX: Int, panels: Panels) {
       if (!source.hasFrame) return
-      val scale = min(PANEL_W.toFloat() / source.displayWidth, PANEL_H.toFloat() / source.displayHeight)
+      val scale = min(panels.panelW.toFloat() / source.displayWidth, panels.panelH.toFloat() / source.displayHeight)
       val w = (source.displayWidth * scale).roundToInt()
       val h = (source.displayHeight * scale).roundToInt()
-      GLES20.glViewport(panelX + (PANEL_W - w) / 2, (PANEL_H - h) / 2, w, h)
+      GLES20.glViewport(panelX + (panels.panelW - w) / 2, (panels.panelH - h) / 2, w, h)
 
       // Quad corners (u, v) in upright display space, GL convention (v up), mapped back to the
       // stored frame by undoing the clockwise display rotation.

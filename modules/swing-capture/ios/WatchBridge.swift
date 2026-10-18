@@ -5,8 +5,8 @@ import WatchConnectivity
  WatchConnectivity link to the SimpleSwing Apple Watch app (targets/watch). Behaviour mirrors
  WearBridge.kt; keep the two in step.
 
- Every message is a dictionary `["t": <type>, …fields]`, sent with sendMessage while the watch is
- reachable:
+ Every message is a dictionary `["t": <type>, "v": <protocol version>, …fields]`, sent with
+ sendMessage while the watch is reachable (no "v" = a watch app before versioning, version 0):
    watch → phone  hello                ask for current state (+ we resend the config)
    watch → phone  trigger              tap-to-save
    watch → phone  swing                ageMs, peakDps[, backswingMs, downswingMs]: wrist swing that peaked ageMs ago
@@ -32,6 +32,12 @@ final class WatchBridge: NSObject, WCSessionDelegate {
   static let modeTap = "tap"
   static let modeOff = "off"
   static let modes: Set<String> = [modeAuto, modeTap, modeOff]
+  /// What this phone speaks; every message carries it under `versionKey` (WatchProtocol.version).
+  static let protocolVersion = 1
+  static let versionKey = "v"
+
+  /// Protocol version the watch app announced in its last hello; -1 until one arrives (capture queue).
+  private(set) var watchVersion = -1
 
   private static let tickInterval = 1.0
   /// Ping every this many ticks (5 s, WearBridge's TICK_MS); status is still checked every tick.
@@ -196,7 +202,7 @@ final class WatchBridge: NSObject, WCSessionDelegate {
     queue.async {
       self.handle(message, receivedNs: received.ns, receivedUs: received.us)
       if message["t"] as? String == "heartbeat" {
-        replyHandler(["t": "state", "state": self.currentState().rawValue, "mode": self.mode])
+        replyHandler(["t": "state", Self.versionKey: Self.protocolVersion, "state": self.currentState().rawValue, "mode": self.mode])
       } else {
         replyHandler([:])
       }
@@ -217,6 +223,10 @@ final class WatchBridge: NSObject, WCSessionDelegate {
     lastHeard = now
     switch message["t"] as? String {
     case "hello":
+      watchVersion = max(0, message[Self.versionKey] as? Int ?? 0)
+      if watchVersion < Self.protocolVersion {
+        NSLog("SwingCapture: watch app speaks protocol v\(watchVersion), phone v\(Self.protocolVersion): update the watch app")
+      }
       sendStateAndConfig()
     case "trigger":
       if mode == Self.modeOff || !onTrigger() {
@@ -269,6 +279,7 @@ final class WatchBridge: NSObject, WCSessionDelegate {
     guard let session, session.activationState == .activated, session.isReachable else { return }
     var message = fields
     message["t"] = type
+    message[Self.versionKey] = Self.protocolVersion
     session.sendMessage(message, replyHandler: nil) { _ in
       // Unreachable mid-send or the watch app went away: the next state change or hello catches up.
     }
@@ -291,7 +302,7 @@ final class WatchBridge: NSObject, WCSessionDelegate {
   /// watch app that echoes the ping under another key still works).
   private static func pingTime(_ message: [String: Any]) -> Int64? {
     if let ns = WristSwingMessage.integer(message[pingKey]) { return Int64(ns) }
-    for (key, value) in message where key != "t" {
+    for (key, value) in message where key != "t" && key != versionKey {
       if let ns = WristSwingMessage.integer(value) { return Int64(ns) }
     }
     return nil

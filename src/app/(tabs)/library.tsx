@@ -1,5 +1,5 @@
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -7,23 +7,32 @@ import { SwingBrowser } from '@/components/swing-browser';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { useLayout } from '@/hooks/use-layout';
 import { useTheme } from '@/hooks/use-theme';
 import { alertDeleteFailed } from '@/lib/storage-alert';
 import { filterSwings, NO_FILTER, type Swing, type SwingFilter } from '@/lib/swing-library';
-import { deleteSwings, listSwings } from '@/lib/swing-store';
+import { deleteSwings, listSwingsAsync } from '@/lib/swing-store';
 
 export default function LibraryScreen() {
   const theme = useTheme();
-  const [swings, setSwings] = useState<Swing[]>([]);
+  const { columns } = useLayout();
+  /** null until the first read, so the empty message doesn't flash before the swings appear. */
+  const [swings, setSwings] = useState<Swing[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  /** The newest reload wins: an older read that lands late is dropped. */
+  const reloadSeq = useRef(0);
   const [filter, setFilter] = useState<SwingFilter>(NO_FILTER);
   /** null = browsing; a Set = selection mode (possibly empty). */
   const [selected, setSelected] = useState<Set<string> | null>(null);
   const selecting = selected !== null;
-  const shown = useMemo(() => filterSwings(swings, filter), [swings, filter]);
+  const shown = useMemo(() => filterSwings(swings ?? [], filter), [swings, filter]);
 
+  // The previous list stays on screen while the folder is re-read.
   const reload = useCallback(() => {
-    setSwings(listSwings());
+    const seq = ++reloadSeq.current;
+    return listSwingsAsync().then((next) => {
+      if (seq === reloadSeq.current) setSwings(next);
+    });
   }, []);
 
   // Clips are added from the Capture tab (and deleted or tagged in review), so re-read on every visit.
@@ -37,8 +46,7 @@ export default function LibraryScreen() {
 
   const onRefresh = () => {
     setRefreshing(true);
-    reload();
-    setRefreshing(false);
+    reload().finally(() => setRefreshing(false));
   };
 
   const toggle = (id: string) =>
@@ -67,7 +75,7 @@ export default function LibraryScreen() {
             const ok = deleteSwings([...selected]);
             setSelected(null);
             reload();
-            if (!ok) alertDeleteFailed();
+            if (!ok) alertDeleteFailed(count);
           },
         },
       ]
@@ -91,9 +99,10 @@ export default function LibraryScreen() {
         ) : (
           <View style={styles.header}>
             <ThemedText type="subtitle">Swings</ThemedText>
-            {swings.length > 0 && <HeaderButton label="Select" onPress={() => setSelected(new Set())} />}
+            {swings != null && swings.length > 0 && <HeaderButton label="Select" onPress={() => setSelected(new Set())} />}
           </View>
         )}
+        {swings && (
         <SwingBrowser
           swings={swings}
           filter={filter}
@@ -104,8 +113,10 @@ export default function LibraryScreen() {
           refreshing={refreshing}
           onRefresh={onRefresh}
           bottomInset={selecting ? 72 : 0}
-          empty="No swings yet. On the Capture tab the camera is always recording — hit a ball, or tap Save after your swing to keep the last few seconds."
+          columns={columns}
+          empty="No swings yet. On Capture, hit a ball and it saves itself, or tap SAVE after a swing."
         />
+        )}
         {selecting && (
           <View style={[styles.deleteBar, { backgroundColor: theme.background }]}>
             <Pressable
@@ -132,8 +143,8 @@ export default function LibraryScreen() {
 function HeaderButton({ label, onPress }: { label: string; onPress: () => void }) {
   const theme = useTheme();
   return (
-    <Pressable accessibilityRole="button" onPress={onPress} hitSlop={8}>
-      <ThemedText style={{ color: theme.accent, fontWeight: '600' }}>{label}</ThemedText>
+    <Pressable accessibilityRole="button" onPress={onPress} hitSlop={{ top: 10, bottom: 10, left: 12, right: 12 }}>
+      <ThemedText style={{ color: theme.textSecondary, fontWeight: '600' }}>{label}</ThemedText>
     </Pressable>
   );
 }

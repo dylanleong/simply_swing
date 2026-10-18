@@ -1,12 +1,13 @@
 // Android manifest settings the store release needs that app.json can't express.
 //
-// 1. Backup rules. Android's automatic backup has a 25 MB quota per app; with the swing videos in
-//    files/swings it overflows and the whole backup is skipped, settings included. Videos are kept
-//    out of both cloud backup and device-to-device transfer; settings (and anything else small) stay in.
-//    Shot tags live beside the videos in files/swings, so they don't travel either (a known limit).
-// 2. Large screens. From Android 16 (API 36) the portrait lock is ignored on screens 600 dp and wider
-//    (tablets, unfolded foldables). The capture view and golfer-box mapping assume portrait, so opt out
-//    for now. Android 17 removes this opt-out for apps targeting it: landscape layouts are needed then.
+// Backup rules. Android's automatic backup has a 25 MB quota per app; with the swing videos in
+// files/swings it overflows and the whole backup is skipped, settings included. Videos are kept
+// out of both cloud backup and device-to-device transfer; settings (and anything else small) stay in.
+// Shot tags live beside the videos in files/swings, so they don't travel either (a known limit).
+//
+// Orientation is not set here: app.json's `orientation: "default"` leaves the activity unspecified,
+// and src/app/_layout.tsx locks phones to portrait at runtime (large screens rotate freely, which
+// Android 16+ enforces on 600 dp and wider screens anyway).
 const { AndroidConfig, withAndroidManifest, withDangerousMod } = require('expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
@@ -30,8 +31,6 @@ const DATA_EXTRACTION_RULES = `<?xml version="1.0" encoding="utf-8"?>
 </data-extraction-rules>
 `;
 
-const RESIZABILITY_PROPERTY = 'android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY';
-
 function withBackupRuleFiles(config) {
   return withDangerousMod(config, [
     'android',
@@ -50,10 +49,6 @@ function withPolicyManifest(config) {
     const app = AndroidConfig.Manifest.getMainApplicationOrThrow(cfg.modResults);
     app.$['android:fullBackupContent'] = '@xml/backup_rules';
     app.$['android:dataExtractionRules'] = '@xml/data_extraction_rules';
-    const properties = (app.property = app.property ?? []);
-    if (!properties.some((p) => p.$['android:name'] === RESIZABILITY_PROPERTY)) {
-      properties.push({ $: { 'android:name': RESIZABILITY_PROPERTY, 'android:value': 'true' } });
-    }
     return cfg;
   });
 }

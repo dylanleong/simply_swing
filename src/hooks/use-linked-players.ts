@@ -1,6 +1,6 @@
 import { useEvent } from 'expo';
 import { useVideoPlayer, type VideoPlayer } from 'expo-video';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { CLIP_BUFFER_OPTIONS } from '@/lib/clip-playback';
 import { linkDriftSec, linkedTimeSec, type Link } from '@/lib/multicam';
@@ -29,18 +29,18 @@ function seekTo(player: VideoPlayer, seconds: number) {
 /**
  * Two looping, muted slow-motion players where the second follows the first through [link] (a
  * swing's second angle, or another swing to compare with). Without a second clip it's one player.
+ * Playback opens at [startSec] of the first clip (just before impact, say), then loops from 0.
  */
-export function useLinkedPlayers(uriA: string, uriB: string | null, link: Link | null) {
+export function useLinkedPlayers(uriA: string, uriB: string | null, link: Link | null, startSec = 0) {
   const [rate, setRate] = useState<number>(DEFAULT_RATE);
   /** Where the first clip is, seconds: from the player while playing, from our seeks while paused. */
-  const [position, setPosition] = useState(0);
+  const [position, setPosition] = useState(startSec);
   const setup = (p: VideoPlayer) => {
     p.bufferOptions = CLIP_BUFFER_OPTIONS;
     p.timeUpdateEventInterval = 1 / 30;
     p.loop = true;
     p.muted = true;
     p.playbackRate = DEFAULT_RATE;
-    p.play();
   };
   const player = useVideoPlayer(uriA, setup);
   const playerB = useVideoPlayer(uriB, setup);
@@ -48,6 +48,17 @@ export function useLinkedPlayers(uriA: string, uriB: string | null, link: Link |
   // A half-written or corrupt clip ends in 'error': say so instead of showing a black pane.
   const { status } = useEvent(player, 'statusChange', { status: player.status });
   const { status: statusB } = useEvent(playerB, 'statusChange', { status: playerB.status });
+  const started = useRef(false);
+
+  // Start from the swing, not from address: seek once the clip is ready (a seek before that is lost), then play.
+  useEffect(() => {
+    if (started.current || status !== 'readyToPlay') return;
+    started.current = true;
+    seekTo(player, startSec);
+    if (link) seekTo(playerB, linkedTimeSec(startSec, link));
+    player.play();
+    if (uriB) playerB.play();
+  }, [status, startSec, link, player, playerB, uriB]);
 
   useEffect(() => {
     const sub = player.addListener('timeUpdate', (e) => setPosition(e.currentTime));

@@ -1,11 +1,13 @@
 package app.simpleswing.capture
 
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Handler
 import android.util.Size
 import android.view.PixelCopy
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import expo.modules.kotlin.AppContext
@@ -13,7 +15,12 @@ import expo.modules.kotlin.views.ExpoView
 
 /**
  * Live camera preview. The SurfaceView buffer is fixed to the camera stream size (required by
- * high-speed sessions) and letterboxed to its portrait aspect so the golfer box maps 1:1.
+ * high-speed sessions) and letterboxed to the aspect it's shown at, so the golfer box maps 1:1.
+ *
+ * The compositor turns a SurfaceView's camera buffers upright for the display, so a landscape
+ * sensor stream is a portrait picture on a phone and a landscape one on a tablet turned on its side.
+ * The view knows the display's rotation; the engine asks for it to shape the motion thumbnail and to
+ * stamp saved clips upright (see [CaptureEngine.clipOrientation]).
  */
 class SwingCaptureView(context: Context, appContext: AppContext) :
   ExpoView(context, appContext), PreviewHost, SurfaceHolder.Callback {
@@ -23,6 +30,9 @@ class SwingCaptureView(context: Context, appContext: AppContext) :
   private val engine = CaptureEngine.get(context)
   private val surfaceView = SurfaceView(context)
   private var bufferSize: Size? = null
+  private var sensorOrientation = 90
+  /** Degrees the display is turned counter-clockwise from the device's natural orientation (any thread). */
+  @Volatile private var displayRotation = 0
 
   init {
     setBackgroundColor(Color.BLACK)
@@ -32,6 +42,7 @@ class SwingCaptureView(context: Context, appContext: AppContext) :
 
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
+    readDisplayRotation()
     engine.attachPreview(this)
   }
 
@@ -40,12 +51,20 @@ class SwingCaptureView(context: Context, appContext: AppContext) :
     super.onDetachedFromWindow()
   }
 
-  override fun setBufferSize(size: Size) {
+  override fun onConfigurationChanged(newConfig: Configuration?) {
+    super.onConfigurationChanged(newConfig)
+    if (readDisplayRotation()) requestLayout()
+  }
+
+  override fun setBufferSize(size: Size, sensorOrientation: Int) {
+    this.sensorOrientation = sensorOrientation
     if (bufferSize == size) return
     bufferSize = size
     surfaceView.holder.setFixedSize(size.width, size.height)
     requestLayout()
   }
+
+  override fun displayRotationDegrees(): Int = displayRotation
 
   override fun copyPreview(dest: Bitmap, handler: Handler, done: (Boolean) -> Unit) {
     if (!surfaceView.holder.surface.isValid) {
@@ -74,10 +93,14 @@ class SwingCaptureView(context: Context, appContext: AppContext) :
   }
 
   override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+    readDisplayRotation()
     val w = r - l
     val h = b - t
-    // The sensor stream is landscape; the app is portrait, so the displayed aspect is height/width.
-    val aspect = bufferSize?.let { it.height.toFloat() / it.width } ?: (9f / 16f)
+    // The stream is in sensor orientation (landscape); it's shown turned upright for the display,
+    // so it's a portrait picture when sensor and display are a quarter turn apart.
+    val size = bufferSize ?: Size(16, 9)
+    val portrait = Orientation.isQuarterTurn(sensorOrientation, displayRotation)
+    val aspect = if (portrait) size.height.toFloat() / size.width else size.width.toFloat() / size.height
     var childW = w
     var childH = (w / aspect).toInt()
     if (childH > h) {
@@ -91,5 +114,18 @@ class SwingCaptureView(context: Context, appContext: AppContext) :
       MeasureSpec.makeMeasureSpec(childH, MeasureSpec.EXACTLY),
     )
     surfaceView.layout(x, y, x + childW, y + childH)
+  }
+
+  /** Main thread. True if the rotation changed. */
+  private fun readDisplayRotation(): Boolean {
+    val rotation = when (display?.rotation) {
+      Surface.ROTATION_90 -> 90
+      Surface.ROTATION_180 -> 180
+      Surface.ROTATION_270 -> 270
+      else -> 0
+    }
+    if (rotation == displayRotation) return false
+    displayRotation = rotation
+    return true
   }
 }

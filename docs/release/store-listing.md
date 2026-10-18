@@ -185,7 +185,7 @@ Add an `<en-US>` block with the same text if you add an en-US listing. The copy 
 
 | # | Screen | What should be on it | Caption (≤ ~40 chars, overlaid above the screenshot) |
 |---|---|---|---|
-| 1 | Capture, armed | Golfer at address inside the green golfer box, level bar straight, status pill "ARMED", Club chip set to 7-iron | **Hit the ball. It saves itself.** |
+| 1 | Capture, armed | Golfer at address inside the green golfer box, level bar straight, status pill "Recording", Club chip set to 7i | **Hit the ball. It saves itself.** |
 | 2 | Replay overlay | Slow-motion loop mid-downswing, "How was it?" result chips | **Instant slow-motion replay** |
 | 3 | Review → Draw | Down-the-line clip paused in transition, plane line and head circle drawn | **Plane line, circles and angles** |
 | 4 | Compare | Two swings side by side, lined up on impact | **Compare two swings on impact** |
@@ -212,7 +212,7 @@ Add an `<en-US>` block with the same text if you add an en-US listing. The copy 
 |---|---|---|---|
 | iPhone with Dynamic Island, **medium** | **Yes. At least 1.** Apple's page lists this as the iPhone minimum | 1206 × 2622 or 1179 × 2556 | iPhone 16 / 17 class phone, or Simulator |
 | iPhone with Dynamic Island, **large** (6.9") | Optional, recommended (the largest shows best) | 1320 × 2868, 1290 × 2796 or 1260 × 2736 | iPhone 16/17 Pro Max class, or Simulator |
-| iPad **13"** | **Yes**, because `supportsTablet: true` | 2064 × 2752 or 2048 × 2732 | iPad Pro 13" / iPad Air 13" Simulator, or upscale cautiously |
+| iPad **13"** | **Yes**, because `supportsTablet: true` | 2064 × 2752 or 2048 × 2732 (portrait) or 2752 × 2064 / 2732 × 2048 (landscape) | iPad Pro 13" / iPad Air 13" Simulator, or upscale cautiously. Take shots 1, 2 and 3 **landscape** (an iPad on a tripod is mounted that way: controls in the right-hand column, dock beside the video); 6 and 7 portrait |
 | Apple Watch | **Yes**, the 1.0 includes a watch app (verify the current required watch size on Apple's page) | e.g. 422 × 514 (Ultra), 416 × 496 (Series 10/11 46 mm) | Watch screenshots (press side button + Digital Crown) or watch Simulator |
 
 - **Limits:** 1–10 screenshots per size, PNG or JPEG, no transparency.
@@ -226,7 +226,7 @@ Add an `<en-US>` block with the same text if you add an en-US listing. The copy 
 | App icon | Yes | 512 × 512 PNG (32-bit), ≤ 1 MB |
 | Feature graphic | Yes | 1024 × 500 JPEG or 24-bit PNG, no alpha |
 | Phone screenshots | Yes, at least 2 (verify the minimum), up to 8 | JPEG or 24-bit PNG, each side 320–3840 px, long side ≤ 2× short side. Use 1080 × 1920 or larger, 9:16 portrait |
-| 7" and 10" tablet screenshots | Optional. Needed to be featured in tablet surfaces | Same rules. Take from a tablet emulator if the layout holds up |
+| 7" and 10" tablet screenshots | Optional. Needed to be featured in tablet surfaces | Same rules. Take from a tablet emulator; Capture and review in landscape, Swings in portrait |
 | **Wear OS screenshots** | **Yes, at least 1**, to opt into Wear OS | 1:1, min 384 × 384, **app UI only**: no device frame, no added text or graphics, no transparency or round mask (verify current rules; the main source is Google's 2021 Wear OS 3 post) |
 | Promo video | Optional | YouTube URL |
 

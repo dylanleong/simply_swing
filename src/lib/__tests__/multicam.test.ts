@@ -21,6 +21,8 @@ const angle = (over: Partial<Angle> = {}): Angle => ({
   deviceName: 'Pixel 8',
   syncMs: 1,
   nudgeMs: 0,
+  width: null,
+  height: null,
   ...over,
 });
 

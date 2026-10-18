@@ -15,11 +15,15 @@ import { MaxFontScale, ThemedText } from '@/components/themed-text';
 import { Transport } from '@/components/transport';
 import { VideoPane } from '@/components/video-pane';
 import { Spacing } from '@/constants/theme';
+import { useLayout } from '@/hooks/use-layout';
 import { useLinkedPlayers } from '@/hooks/use-linked-players';
 import { useTheme } from '@/hooks/use-theme';
+import { DOCK_COLUMN_WIDTH } from '@/lib/layout';
 import { angleLabels, angleLink, exportSource, formatSync, nudgeStepMs, type ReviewLayout } from '@/lib/multicam';
+import { PHOTOS, SAVE_TO_PHOTOS } from '@/lib/photos-name';
+import { replayStartMs } from '@/lib/replay-start';
 import { saveSwingToPhotos, shareSwing } from '@/lib/swing-export';
-import { formatClipTime, formatTempo, type Angle, type Swing } from '@/lib/swing-library';
+import { clipAspect, formatClipTime, formatTempo, type Angle, type Swing } from '@/lib/swing-library';
 import type { Drawings, Shape, SwingNotes } from '@/lib/swing-notes';
 import { alertDeleteFailed, alertSaveFailed } from '@/lib/storage-alert';
 import { deleteSwing, getSwing, setAngleNudge, updateSwingNotes } from '@/lib/swing-store';
@@ -65,6 +69,9 @@ export default function SwingReviewScreen() {
 
 function Review({ swing }: { swing: Swing }) {
   const theme = useTheme();
+  const { isLarge, isLandscape } = useLayout();
+  /** A tablet on its side: the dock stands beside the video instead of under it (and still never moves). */
+  const dockAside = isLarge && isLandscape;
   const [mode, setMode] = useState<Mode>('tag');
   const [notes, setNotes] = useState<SwingNotes>(swing.notes);
   const [tool, setTool] = useState<DrawTool | null>(null);
@@ -84,11 +91,7 @@ function Review({ swing }: { swing: Swing }) {
   const angle: Angle | null = useMemo(() => (swing.angle ? { ...swing.angle, nudgeMs } : null), [swing.angle, nudgeMs]);
   const link = useMemo(() => (angle ? angleLink(swing, angle) : null), [angle, swing]);
   const { player, playerB, isPlaying, rate, position, failed, failedB, pause, showAt, togglePlay, step, changeRate } =
-    useLinkedPlayers(
-    swing.uri,
-    swing.angle?.uri ?? null,
-    link
-  );
+    useLinkedPlayers(swing.uri, swing.angle?.uri ?? null, link, replayStartMs(swing) / 1000);
 
   const [labelA, labelB] = angle ? angleLabels(angle) : ['', ''];
   const showA = !angle || layout !== 'b';
@@ -170,11 +173,11 @@ function Review({ swing }: { swing: Swing }) {
     busyRef.current = true;
     setBusy(true);
     pause();
-    say(kind === 'save' ? 'Saving to your gallery…' : 'Preparing…', true);
+    say(kind === 'save' ? `Saving to your ${PHOTOS}…` : 'Preparing…', true);
     try {
       if (kind === 'save') {
         await saveSwingToPhotos(source);
-        say(source.angle ? 'Saved to your gallery: both angles, side by side.' : 'Saved to your gallery in slow motion.');
+        say(source.angle ? `Saved to your ${PHOTOS}: both angles, side by side.` : `Saved to your ${PHOTOS} in slow motion.`);
       } else {
         await shareSwing(source);
         setNotice(null);
@@ -197,7 +200,7 @@ function Review({ swing }: { swing: Swing }) {
         onPress: () => {
           pause();
           if (!deleteSwing(swing.id)) {
-            alertDeleteFailed();
+            alertDeleteFailed(1);
             return;
           }
           leaveToLibrary();
@@ -218,7 +221,7 @@ function Review({ swing }: { swing: Swing }) {
   const toolHint = TOOLS.find((t) => t.value === tool)?.hint;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, dockAside && styles.containerRow]}>
       <Stack.Screen
         options={{
           title,
@@ -240,6 +243,7 @@ function Review({ swing }: { swing: Swing }) {
         {showA && (
           <VideoPane
             player={player}
+            aspect={clipAspect(swing)}
             label={angle ? labelA : undefined}
             onLabelPress={angle ? () => toggleSolo('a') : undefined}
             solo={layout === 'a'}
@@ -255,6 +259,7 @@ function Review({ swing }: { swing: Swing }) {
         {showB && (
           <VideoPane
             player={playerB}
+            aspect={clipAspect(swing.angle)}
             label={labelB}
             onLabelPress={() => toggleSolo('b')}
             solo={layout === 'b'}
@@ -274,7 +279,9 @@ function Review({ swing }: { swing: Swing }) {
       </View>
 
       <MaxFontScale.Provider value={DOCK_MAX_FONT_SCALE}>
-        <SafeAreaView edges={['bottom']} style={[styles.dock, { backgroundColor: theme.background }]}>
+        <SafeAreaView
+          edges={dockAside ? ['bottom', 'right'] : ['bottom']}
+          style={[styles.dock, dockAside && styles.dockAside, { backgroundColor: theme.background }]}>
           <View style={styles.padded}>
             <Transport
               duration={duration}
@@ -347,7 +354,7 @@ function Review({ swing }: { swing: Swing }) {
       <Sheet visible={sheet === 'menu'} onClose={() => setSheet(null)}>
         <SheetRow
           icon="ion:download-outline"
-          label="Save to Photos"
+          label={SAVE_TO_PHOTOS}
           detail={busy ? 'Working…' : source.angle ? 'Side by side' : undefined}
           disabled={busy || failed}
           onPress={() => run('save')}
@@ -401,6 +408,7 @@ function Review({ swing }: { swing: Swing }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
+  containerRow: { flexDirection: 'row' },
   headerButtons: { flexDirection: 'row', alignItems: 'center' },
   videos: { flex: 1, flexDirection: 'row' },
   notice: {
@@ -420,6 +428,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   dock: { paddingTop: Spacing.two },
+  dockAside: { width: DOCK_COLUMN_WIDTH, justifyContent: 'flex-end' },
   padded: { paddingHorizontal: Spacing.three },
   tray: { height: TRAY_HEIGHT, gap: Spacing.two, justifyContent: 'center' },
   trayFooter: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },

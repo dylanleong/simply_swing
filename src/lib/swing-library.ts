@@ -15,6 +15,9 @@ export type Angle = {
   syncMs: number | null;
   /** Manual alignment correction from the review screen. */
   nudgeMs: number;
+  /** Upright size of the clip, when the camera phone said (older angles: null, assumed portrait). */
+  width: number | null;
+  height: number | null;
 };
 
 /** Swing timing from the watch: takeaway → top, top → impact. */
@@ -56,17 +59,39 @@ export type Swing = {
   /** Video file size (both angles), for the storage summary. */
   sizeBytes: number | null;
   angle: Angle | null;
+  /** Upright size of the clip (from the sidecar; older clips: null, assumed 9:16 portrait). */
+  width: number | null;
+  height: number | null;
   /** From the watch, when it sensed the swing. */
   tempo: Tempo | null;
   /** The golfer's tags, favourite and drawings (`.user.json`). */
   notes: SwingNotes;
+  /** Sidecar schema version (`v`); sidecars written before it had one are 1. */
+  version: number;
 };
+
+/** The sidecar schema this build writes and fully understands. Newer sidecars still parse: unknown fields are ignored. */
+export const SIDECAR_VERSION = 1;
 
 const CLIP_NAME = /^(swing_(\d+))\.mp4$/;
 const SOURCES: readonly TriggerSource[] = ['manual', 'volumeKey', 'watch', 'impact', 'wrist'];
 const VIEWS: readonly CameraView[] = ['dtl', 'faceOn'];
 
 const numberOrNull = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+/** A pixel size, or null (0 is what an older camera phone sends for "unknown"). */
+const sizeOrNull = (v: unknown) => {
+  const n = numberOrNull(v);
+  return n != null && n > 0 ? n : null;
+};
+
+/** Every clip was portrait 9:16 before sidecars carried a size. */
+export const DEFAULT_CLIP_ASPECT = 9 / 16;
+
+/** The clip's picture shape (width / height) as shown upright, for sizing panes and placing drawings. */
+export function clipAspect(clip: { width: number | null; height: number | null } | null | undefined): number {
+  return clip && clip.width != null && clip.height != null ? clip.width / clip.height : DEFAULT_CLIP_ASPECT;
+}
 
 function parseJsonObject(json: string | null): Record<string, unknown> {
   if (!json) return {};
@@ -93,6 +118,8 @@ function parseAngle(uri: string, file: AngleFile): Angle | null {
     deviceName: typeof meta.deviceName === 'string' ? meta.deviceName : null,
     syncMs: numberOrNull(meta.syncMs),
     nudgeMs: numberOrNull(meta.nudgeMs) ?? 0,
+    width: sizeOrNull(meta.width),
+    height: sizeOrNull(meta.height),
   };
 }
 
@@ -131,8 +158,11 @@ export function parseSwing(
     source: SOURCES.includes(meta.source as TriggerSource) ? (meta.source as TriggerSource) : null,
     sizeBytes: sizeBytes == null ? null : sizeBytes + (angleFile?.sizeBytes ?? 0),
     angle,
+    width: sizeOrNull(meta.width),
+    height: sizeOrNull(meta.height),
     tempo: parseTempo(meta.backswingMs, meta.downswingMs),
     notes: parseNotes(notesJson),
+    version: numberOrNull(meta.v) ?? SIDECAR_VERSION,
   };
 }
 

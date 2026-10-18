@@ -62,10 +62,13 @@ interface EngineListener {
   fun onError(code: String, message: String)
 }
 
-/** The on-screen preview (SwingCaptureView). Called on the main thread. */
+/** The on-screen preview (SwingCaptureView). Called on the main thread unless said otherwise. */
 interface PreviewHost {
   /** Size the preview surface's buffer to the camera stream size (landscape sensor orientation). */
-  fun setBufferSize(size: Size)
+  fun setBufferSize(size: Size, sensorOrientation: Int)
+
+  /** How far the display is turned from the device's natural orientation (0/90/180/270). Any thread. */
+  fun displayRotationDegrees(): Int
 
   /** Copy the current preview frame, upright and scaled to [dest]'s size. Any thread. */
   fun copyPreview(dest: Bitmap, handler: Handler, done: (Boolean) -> Unit)
@@ -79,7 +82,10 @@ interface PreviewHost {
  * snapshots both rings and muxes an MP4.
  *
  * Threads: all camera/pipeline state is owned by [cameraHandler]; encoder callbacks run on
- * [encoderHandler]; audio has its own thread; muxing runs on [exportExecutor].
+ * [encoderHandler]; audio has its own thread; the motion gate samples the preview on [motionHandler];
+ * muxing runs on [exportExecutor]. Triggers come from any thread (audio, volume keys, watch, peer,
+ * JS), so [state], [pending] and every state change are guarded by [triggerLock]; watch and peer
+ * callbacks run on the main thread and their own threads respectively.
  */
 class CaptureEngine private constructor(private val context: Context) {
   @Volatile var listener: EngineListener? = null
@@ -107,8 +113,10 @@ class CaptureEngine private constructor(private val context: Context) {
   // Motion gate: ~15 fps luma thumbnails of the preview, owned by the motion thread.
   private val motionHandler = Handler(HandlerThread("SwingMotion").apply { start() }.looper)
   private val motionGate = MotionGate(MotionGate.NormalizedRoi(0.25, 0.1, 0.5, 0.85))
-  private val motionBitmap = Bitmap.createBitmap(MOTION_W, MOTION_H, Bitmap.Config.ARGB_8888)
-  private val motionPixels = IntArray(MOTION_W * MOTION_H)
+  /** Thumbnails the shape of the preview as shown: portrait on a phone, landscape on a tablet on its side. */
+  private val motionPortrait = Bitmap.createBitmap(MOTION_SHORT, MOTION_LONG, Bitmap.Config.ARGB_8888)
+  private val motionLandscape = Bitmap.createBitmap(MOTION_LONG, MOTION_SHORT, Bitmap.Config.ARGB_8888)
+  private val motionPixels = IntArray(MOTION_SHORT * MOTION_LONG)
   /** Pipeline generation the sampler runs for; anything else stops it. */
   @Volatile private var motionGeneration = -1
   private var lastMotionReportUs = 0L
@@ -179,6 +187,8 @@ class CaptureEngine private constructor(private val context: Context) {
     val window: ClipWindow,
     val format: CaptureFormat,
     val id: String,
+    /** Rotation that shows the clip upright, from how the device was held when it was triggered. */
+    val orientation: Int,
     val forPeer: Boolean = false,
   ) {
     @Volatile var exporting = false
@@ -256,7 +266,9 @@ class CaptureEngine private constructor(private val context: Context) {
       val fmt = format ?: return false
       if (atUs - lastTriggerUs < COOLDOWN_US) return false
       lastTriggerUs = atUs
-      val clip = PendingClip(source, ClipWindows.forTrigger(source, atUs, cfg), fmt, "swing_${System.currentTimeMillis()}")
+      val clip = PendingClip(
+        source, ClipWindows.forTrigger(source, atUs, cfg), fmt, "swing_${System.currentTimeMillis()}", clipOrientation(fmt),
+      )
       startPending(clip)
       listener?.onTrigger(source, atUs / 1000.0)
       if (peers.role == PeerRole.MAIN) peers.sendTrigger(clip.id, clip.window)
@@ -272,10 +284,14 @@ class CaptureEngine private constructor(private val context: Context) {
     synchronized(triggerLock) {
       if (state != EngineState.ARMED) return false
       val fmt = format ?: return false
-      startPending(PendingClip(TriggerSource.MANUAL, window, fmt, id, forPeer = true))
+      startPending(PendingClip(TriggerSource.MANUAL, window, fmt, id, clipOrientation(fmt), forPeer = true))
       return true
     }
   }
+
+  /** Any thread: the rotation that shows a clip saved now upright (a phone that isn't on screen counts as upright). */
+  private fun clipOrientation(fmt: CaptureFormat): Int =
+    Orientation.clipOrientation(fmt.sensorOrientation, previewHost?.displayRotationDegrees() ?: 0)
 
   /** Under [triggerLock]. */
   private fun startPending(clip: PendingClip) {
@@ -301,7 +317,7 @@ class CaptureEngine private constructor(private val context: Context) {
     hosts.removeAll { it.first === host }
     hosts.add(host to null)
     useNewestHost()
-    Log.d(TAG, "Preview view ${host.hashCode()} attached (${hosts.size} on screen)")
+    verbose { "Preview view ${host.hashCode()} attached (${hosts.size} on screen)" }
     // A camera running into a view that's now covered moves to this one once its surface is ready.
     if (sessionHost != null && sessionHost !== host) stopPipeline()
   }
@@ -309,7 +325,7 @@ class CaptureEngine private constructor(private val context: Context) {
   fun detachPreview(host: PreviewHost) = cameraHandler.post {
     val wasLive = previewHost === host
     hosts.removeAll { it.first === host }
-    Log.d(TAG, "Preview view ${host.hashCode()} detached live=$wasLive (${hosts.size} left)")
+    verbose { "Preview view ${host.hashCode()} detached live=$wasLive (${hosts.size} left)" }
     if (sessionHost === host) stopPipeline()
     if (!wasLive) {
       maybeOpen()
@@ -328,7 +344,7 @@ class CaptureEngine private constructor(private val context: Context) {
     if (i < 0) return@post
     // Remembered even for a covered view, so it can take over when the one on top goes.
     hosts[i] = host to (surface to size)
-    Log.d(TAG, "Preview view ${host.hashCode()} surface ${size.width}x${size.height} live=${previewHost === host}")
+    verbose { "Preview view ${host.hashCode()} surface ${size.width}x${size.height} live=${previewHost === host}" }
     if (previewHost !== host) return@post
     // Until setBufferSize lands, the surface may have the view's size; maybeOpen waits for a match.
     previewSurface = surface
@@ -342,7 +358,7 @@ class CaptureEngine private constructor(private val context: Context) {
     cameraHandler.post {
       val i = hosts.indexOfFirst { it.first === host }
       if (i >= 0) hosts[i] = host to null
-      Log.d(TAG, "Preview view ${host.hashCode()} surface destroyed live=${previewHost === host}")
+      verbose { "Preview view ${host.hashCode()} surface destroyed live=${previewHost === host}" }
       if (previewHost === host) {
         stopPipeline()
         previewSurface = null
@@ -363,7 +379,7 @@ class CaptureEngine private constructor(private val context: Context) {
     previewHost = host
     previewSurface = surface?.first
     previewSurfaceSize = surface?.second
-    if (host != null) format?.let { fmt -> mainHandler.post { host.setBufferSize(fmt.size) } }
+    if (host != null) format?.let { fmt -> mainHandler.post { host.setBufferSize(fmt.size, fmt.sensorOrientation) } }
   }
 
   // ---- Camera thread ----
@@ -389,7 +405,7 @@ class CaptureEngine private constructor(private val context: Context) {
       motionGate.setRoi(config.roi)
       videoRing.setWindow(windowUs)
       audioRing.setWindow(windowUs)
-      previewHost?.let { host -> mainHandler.post { host.setBufferSize(fmt.size) } }
+      previewHost?.let { host -> mainHandler.post { host.setBufferSize(fmt.size, fmt.sensorOrientation) } }
       Log.i(TAG, "Selected ${fmt.size.width}x${fmt.size.height}@${fmt.fps} highSpeed=${fmt.highSpeed}")
       // The preview surface can outlive a stop/start (e.g. switching tabs keeps the view alive), and
       // then no new surface callback arrives; if it already has the right size, open straight away.
@@ -400,7 +416,7 @@ class CaptureEngine private constructor(private val context: Context) {
   }
 
   private fun maybeOpen() {
-    Log.d(TAG, "maybeOpen host=${previewHost?.hashCode()} surface=${previewSurface?.isValid} size=$previewSurfaceSize fmt=${format?.size} camera=${camera != null} opening=$opening")
+    verbose { "maybeOpen host=${previewHost?.hashCode()} surface=${previewSurface?.isValid} size=$previewSurfaceSize fmt=${format?.size} camera=${camera != null} opening=$opening" }
     val fmt = format ?: return
     val surface = previewSurface?.takeIf { it.isValid && previewSurfaceSize == fmt.size } ?: return
     val cfg = config ?: return
@@ -427,7 +443,7 @@ class CaptureEngine private constructor(private val context: Context) {
       detector = ImpactDetector(AudioPipeline.SAMPLE_RATE, cfg.sensitivity) { ptsUs, levelDb, marginDb, loudEnough ->
         // With the watch sensing, the wrist decides instead of the camera (see TriggerFusion).
         if (loudEnough && impactTrigger && ptsUs - lastTouchUs >= TOUCH_MUTE_US && wristDecides()) {
-          Log.d(TAG, "Impact at $ptsUs level=%.1f dB → waiting for wrist".format(levelDb))
+          verbose { "Impact at $ptsUs level=%.1f dB → waiting for wrist".format(levelDb) }
           onFusionSound(ptsUs, levelDb, detector.minLevelDb)
           return@ImpactDetector
         }
@@ -441,11 +457,10 @@ class CaptureEngine private constructor(private val context: Context) {
           else -> null
         }
         val accepted = reason == null && trigger(TriggerSource.IMPACT, ptsUs)
-        Log.d(
-          TAG,
+        verbose {
           "Impact at $ptsUs level=%.1f dB margin=%.1f dB motion=%s accepted=$accepted reason=$reason"
-            .format(levelDb, marginDb, motion?.let { "%.1f/%.1f".format(it.peak, it.threshold) } ?: "n/a"),
-        )
+            .format(levelDb, marginDb, motion?.let { "%.1f/%.1f".format(it.peak, it.threshold) } ?: "n/a")
+        }
         listener?.onSound(levelDb, detector.minLevelDb, accepted, reason ?: if (accepted) null else "busy", motion)
       }
       audio = AudioPipeline(clock, audioRing::add, { audioFormat = it }, ::onPipelineError, detector::process)
@@ -458,13 +473,17 @@ class CaptureEngine private constructor(private val context: Context) {
     }
   }
 
+  /**
+   * Callbacks for one openCamera call. A stale one (its pipeline was torn down, [generation] moved
+   * on) only closes its device: it must not touch [opening], which may belong to a newer open.
+   */
   private fun deviceCallback(gen: Int, preview: Surface) = object : CameraDevice.StateCallback() {
     override fun onOpened(device: CameraDevice) {
-      opening = false
       if (gen != generation) {
         device.close()
         return
       }
+      opening = false
       camera = device
       // The camera can be taken away (another app, the lock-screen camera) between opening and here.
       try {
@@ -474,14 +493,15 @@ class CaptureEngine private constructor(private val context: Context) {
       }
     }
 
+    /** Another app (or the lock-screen camera) took the camera: stop, and tell the golfer why. */
     override fun onDisconnected(device: CameraDevice) {
-      opening = false
       device.close()
-      if (gen == generation) stopPipeline()
+      if (gen != generation) return
+      stopPipeline()
+      listener?.onError("E_CAMERA_BUSY", "Another app is using the camera. Come back to SimpleSwing to continue.")
     }
 
     override fun onError(device: CameraDevice, error: Int) {
-      opening = false
       device.close()
       if (gen == generation) fail(CaptureException("E_CAMERA", "Camera error $error"))
     }
@@ -523,7 +543,9 @@ class CaptureEngine private constructor(private val context: Context) {
           } else {
             s.setRepeatingRequest(build(withEv = true), exposureCallback, cameraHandler)
           }
-          setState(if (standby) EngineState.STANDBY else EngineState.ARMED)
+          // Under triggerLock like every other transition: a trigger racing this must see ARMED
+          // before or after it, never broadcast ARMED over its TRIGGERED.
+          synchronized(triggerLock) { setState(if (standby) EngineState.STANDBY else EngineState.ARMED) }
           mainHandler.post { activityProvider()?.let(volumeKeys::install) }
           startMotionSampling(gen)
         } catch (e: Exception) {
@@ -563,7 +585,7 @@ class CaptureEngine private constructor(private val context: Context) {
     // The swing peaked ageMs before the watch sent it, plus the radio hop to us.
     val peakUs = clock.nowUs() - (ageMs + oneWayMs) * 1000
     tempo?.let { tempos.add(peakUs, it) }
-    Log.d(TAG, "Wrist swing peak $peakDps°/s at $peakUs (age $ageMs ms, one-way $oneWayMs ms, tempo $tempo)")
+    verbose { "Wrist swing peak $peakDps°/s at $peakUs (age $ageMs ms, one-way $oneWayMs ms, tempo $tempo)" }
     val decisions = synchronized(fusion) { fusion.onWrist(peakUs, clock.nowUs()) }
     applyFusion(decisions)
   }
@@ -579,11 +601,11 @@ class CaptureEngine private constructor(private val context: Context) {
       when (d.kind) {
         TriggerFusion.Kind.IMPACT -> {
           val accepted = trigger(TriggerSource.IMPACT, d.atUs)
-          Log.d(TAG, "Sound + wrist at ${d.atUs}: accepted=$accepted")
+          verbose { "Sound + wrist at ${d.atUs}: accepted=$accepted" }
           listener?.onSound(levelDb, minLevelDb, accepted, if (accepted) null else "busy", null)
         }
         TriggerFusion.Kind.NO_WRIST -> {
-          Log.d(TAG, "Sound at ${d.atUs} without a wrist swing: ignored")
+          verbose { "Sound at ${d.atUs} without a wrist swing: ignored" }
           // Kept for a late wrist message; re-stash the levels in case it arrives, then forget them.
           synchronized(fusion) { pendingSounds[d.atUs] = levelDb to minLevelDb }
           cameraHandler.postDelayed({ synchronized(fusion) { pendingSounds.remove(d.atUs) } }, LATE_WRIST_MS)
@@ -591,7 +613,7 @@ class CaptureEngine private constructor(private val context: Context) {
         }
         TriggerFusion.Kind.PRACTICE -> {
           val accepted = trigger(TriggerSource.WRIST, d.atUs)
-          Log.d(TAG, "Practice swing at ${d.atUs}: accepted=$accepted")
+          verbose { "Practice swing at ${d.atUs}: accepted=$accepted" }
         }
       }
     }
@@ -702,27 +724,34 @@ class CaptureEngine private constructor(private val context: Context) {
       motionHandler.postDelayed({ sampleMotion(gen) }, MOTION_INTERVAL_MS)
       return
     }
-    host.copyPreview(motionBitmap, motionHandler) { ok ->
+    // The copy is scaled to the bitmap, so the bitmap must be the preview's shape or the box would stretch.
+    val fmt = format
+    val portrait = fmt == null || Orientation.isQuarterTurn(fmt.sensorOrientation, host.displayRotationDegrees())
+    val bitmap = if (portrait) motionPortrait else motionLandscape
+    host.copyPreview(bitmap, motionHandler) { ok ->
       if (gen != motionGeneration) return@copyPreview
-      if (ok) onMotionFrame()
+      if (ok) onMotionFrame(bitmap)
       motionHandler.postDelayed({ sampleMotion(gen) }, MOTION_INTERVAL_MS)
     }
   }
 
-  private fun onMotionFrame() {
+  private fun onMotionFrame(bitmap: Bitmap) {
     val now = clock.nowUs()
-    motionBitmap.getPixels(motionPixels, 0, MOTION_W, 0, 0, MOTION_W, MOTION_H)
+    val w = bitmap.width
+    val h = bitmap.height
+    bitmap.getPixels(motionPixels, 0, w, 0, 0, w, h)
     val luma = IntArray(motionPixels.size) {
       val c = motionPixels[it]
       ((c shr 16 and 0xff) * 77 + (c shr 8 and 0xff) * 150 + (c and 0xff) * 29) shr 8
     }
-    motionGate.addFrame(now, luma, MOTION_W, MOTION_H)
+    // A change of shape (the tablet was turned) starts the motion history afresh inside the gate.
+    motionGate.addFrame(now, luma, w, h)
     if (now - lastMotionReportUs >= MOTION_REPORT_US) {
       lastMotionReportUs = now
       val level = motionGate.peakSince(now, MOTION_REPORT_US)
       val verdict = motionGate.evaluate(now)
       if (level != null && verdict != null) {
-        Log.d(TAG, "Motion peak=%.1f%% threshold=%.1f%%".format(level, verdict.threshold))
+        verbose { "Motion peak=%.1f%% threshold=%.1f%%".format(level, verdict.threshold) }
         listener?.onMotion(level, verdict.threshold)
       }
     }
@@ -794,17 +823,19 @@ class CaptureEngine private constructor(private val context: Context) {
         ClipWriter.ensureSpace(dir)
         val clip = ClipWriter.write(
           File(dir, "${p.id}.mp4"), frames.videoFormat, frames.video, frames.audioFormat, frames.audio,
-          p.format.sensorOrientation, p.window.impactUs, p.window.anchorUs, thumbnail = false,
+          p.orientation, p.window.impactUs, p.window.anchorUs, thumbnail = false,
         )
-        peers.sendClip(p.id, clip.file, p.format.fps, clip.durationUs / 1000.0, clip.anchorOffsetUs / 1000.0)
+        val (w, h) = Orientation.uprightSize(p.format.size.width, p.format.size.height, p.orientation)
+        peers.sendClip(p.id, clip.file, p.format.fps, clip.durationUs / 1000.0, clip.anchorOffsetUs / 1000.0, w, h)
         return
       }
       ClipWriter.ensureSpace(clipsDir)
       val file = File(clipsDir, "${p.id}.mp4")
       val clip = ClipWriter.write(
-        file, frames.videoFormat, frames.video, frames.audioFormat, frames.audio, p.format.sensorOrientation,
+        file, frames.videoFormat, frames.video, frames.audioFormat, frames.audio, p.orientation,
         p.window.impactUs, p.window.anchorUs,
       )
+      val (width, height) = Orientation.uprightSize(p.format.size.width, p.format.size.height, p.orientation)
       // The wrist swing that set this clip off (sound + wrist, or a practice swing) knows its tempo.
       val tempo = if (p.source == TriggerSource.IMPACT || p.source == TriggerSource.WRIST) {
         tempos.near(p.window.anchorUs)
@@ -820,6 +851,9 @@ class CaptureEngine private constructor(private val context: Context) {
         "impactOffsetMs" to clip.impactOffsetUs?.let { it / 1000.0 },
         "anchorOffsetMs" to clip.anchorOffsetUs / 1000.0,
         "source" to p.source.jsName,
+        "width" to width,
+        "height" to height,
+        "orientation" to p.orientation,
         "backswingMs" to tempo?.backswingMs,
         "downswingMs" to tempo?.downswingMs,
       )
@@ -908,8 +942,14 @@ class CaptureEngine private constructor(private val context: Context) {
   private fun hasPermission(permission: String) =
     context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
+  /** Per-frame / per-sound tracing, debug builds only (the message isn't even built in release). */
+  private inline fun verbose(message: () -> String) {
+    if (VERBOSE) Log.d(TAG, message())
+  }
+
   companion object {
     private const val TAG = "SwingCaptureEngine"
+    private val VERBOSE = BuildConfig.DEBUG
     private const val COOLDOWN_US = 3_000_000L
     private const val AUDIO_SETTLE_MS = 150L
     private const val EXPORT_WATCHDOG_MS = 3_000L
@@ -920,9 +960,9 @@ class CaptureEngine private constructor(private val context: Context) {
     /** How long a sound rejected for "no wrist swing" can still be claimed by a late wrist message. */
     private const val LATE_WRIST_MS = 2_500L
     private const val STANDBY_FPS = 30
-    /** Upright portrait thumbnail of the preview for motion sensing. */
-    private const val MOTION_W = 72
-    private const val MOTION_H = 128
+    /** Upright thumbnail of the preview for motion sensing: 72x128 portrait or 128x72 landscape. */
+    private const val MOTION_SHORT = 72
+    private const val MOTION_LONG = 128
     private const val MOTION_INTERVAL_MS = 66L
     private const val MOTION_REPORT_US = 500_000L
 

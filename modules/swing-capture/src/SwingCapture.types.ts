@@ -90,6 +90,13 @@ export type ClipReadyEvent = {
   /** Position of the trigger instant (impact or button press) inside the clip, in ms; lines up the angles. */
   anchorOffsetMs: number;
   source: TriggerSource;
+  /**
+   * Size of the clip as shown upright (portrait from a phone, landscape from a tablet on its side), so
+   * screens can shape a pane without opening the video. `orientation` is the rotation stored with it.
+   */
+  width: number;
+  height: number;
+  orientation: number;
   /** Tempo of the wrist swing that triggered the clip (watch sensing), else absent / null. */
   backswingMs?: number | null;
   downswingMs?: number | null;

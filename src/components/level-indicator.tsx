@@ -4,7 +4,7 @@ import { StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
-import { levelAdvice, smoothTilt, tiltFromGravity, type Tilt } from '@/lib/level';
+import { levelAdvice, smoothTilt, tiltForScreen, tiltFromGravity, type Tilt } from '@/lib/level';
 
 const UPDATE_MS = 100;
 /** How long "Level ✓" stays after the phone is straightened. */
@@ -12,9 +12,10 @@ const LEVEL_SHOWN_MS = 2500;
 
 /**
  * Camera setup check: says when the phone is tilted or aimed off level, with a horizon line to
- * straighten it by, and confirms briefly once it's level. Quiet otherwise.
+ * straighten it by, and confirms briefly once it's level. Quiet otherwise. [landscape] is the
+ * screen's orientation (a tablet mounted on its side is level when it reads 90° in device axes).
  */
-export function LevelIndicator({ active }: { active: boolean }) {
+export function LevelIndicator({ active, landscape = false }: { active: boolean; landscape?: boolean }) {
   const [tilt, setTilt] = useState<Tilt | null>(null);
   /** Showing "Level ✓" after the phone was straightened. */
   const [justLevelled, setJustLevelled] = useState(false);
@@ -31,10 +32,10 @@ export function LevelIndicator({ active }: { active: boolean }) {
         if (!ok || cancelled) return;
         Accelerometer.setUpdateInterval(UPDATE_MS);
         sub = Accelerometer.addListener(({ x, y, z }) => {
-          const next = smoothTilt(smoothed.current, tiltFromGravity(x, y, z));
+          const next = smoothTilt(smoothed.current, tiltForScreen(tiltFromGravity(x, y, z), landscape));
           smoothed.current = next;
           const now = Date.now();
-          if (levelAdvice(next)) {
+          if (levelAdvice(next, landscape)) {
             wasOff.current = true;
             levelledUntil.current = 0;
           } else if (wasOff.current) {
@@ -52,9 +53,9 @@ export function LevelIndicator({ active }: { active: boolean }) {
       sub?.remove();
       smoothed.current = null;
     };
-  }, [active]);
+  }, [active, landscape]);
 
-  const advice = tilt ? levelAdvice(tilt) : null;
+  const advice = tilt ? levelAdvice(tilt, landscape) : null;
 
   if (!active || !tilt || (!advice && !justLevelled)) return null;
   return (

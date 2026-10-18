@@ -80,7 +80,12 @@ final class PeerLink {
   private var view = ""
   private var deviceName = "iPhone"
   private var connection: Connection?
-  private var listener: NWListener?
+  private var listener: NWListener? {
+    didSet { cachedAddressAt = nil }
+  }
+  /// `localAddress()` answer and when it was looked up (systemUptime; nil = look up again).
+  private var cachedAddress: String?
+  private var cachedAddressAt: TimeInterval?
   private var browser: NWBrowser?
   private var found: [String: PeerInfo] = [:]
   /// Main role: where to reconnect after the link drops.
@@ -107,6 +112,7 @@ final class PeerLink {
   }
 
   private static let tickInterval = 1.0
+  private static let addressCacheInterval: TimeInterval = 10
   private static let silenceTimeout = 6.0
   private static let connectTimeout = 3.0
   private static let helloTimeout = 5.0
@@ -205,8 +211,8 @@ final class PeerLink {
     }
   }
 
-  /// Camera role: stream a saved clip to the main phone, then delete it.
-  func sendClip(id: String, file: URL, fps: Int, durationMs: Double, anchorOffsetMs: Double) {
+  /// Camera role: stream a saved clip to the main phone, then delete it. `width` x `height` is its upright size.
+  func sendClip(id: String, file: URL, fps: Int, durationMs: Double, anchorOffsetMs: Double, width: Int, height: Int) {
     queue.async { [self] in
       let discard = { try? FileManager.default.removeItem(at: file) }
       guard role == .camera, let c = connection else {
@@ -225,7 +231,7 @@ final class PeerLink {
         discard()
         if ok { NSLog("SwingPeerLink: sent clip \(id) (\(size / 1024) KB)") }
       }
-      c.send(.clip(id: id, fps: fps, durationMs: durationMs, anchorOffsetMs: anchorOffsetMs, size: size))
+      c.send(.clip(id: id, fps: fps, durationMs: durationMs, anchorOffsetMs: anchorOffsetMs, size: size, width: width, height: height))
       // One chunk in flight at a time: the clip never sits in memory whole, and pongs interleave.
       func next() {
         let chunk: Data
@@ -678,7 +684,7 @@ final class PeerLink {
 
   private func receive(_ c: Connection, _ m: PeerMessage) {
     switch m {
-    case let .clip(id, fps, durationMs, anchorOffsetMs, size):
+    case let .clip(id, fps, durationMs, anchorOffsetMs, size, width, height):
       if let cut = c.incoming {
         c.incoming = nil
         dropIncoming(cut)
@@ -694,7 +700,7 @@ final class PeerLink {
         host?.peerError(code: "E_PEER_CLIP", message: "Couldn't save the second camera's clip.")
         return
       }
-      c.incoming = Incoming(id: id, fps: fps, durationMs: durationMs, anchorOffsetMs: anchorOffsetMs, size: size)
+      c.incoming = Incoming(id: id, fps: fps, durationMs: durationMs, anchorOffsetMs: anchorOffsetMs, size: size, width: width, height: height)
     case let .data(bytes):
       guard let clip = c.incoming else { return }
       // write() also refuses bytes beyond the size the CLIP announced.
@@ -741,16 +747,20 @@ final class PeerLink {
     let durationMs: Double
     let anchorOffsetMs: Double
     let size: Int64
+    let width: Int
+    let height: Int
     private let part: URL
     private let handle: FileHandle?
     private var received: Int64 = 0
 
-    init(id: String, fps: Int, durationMs: Double, anchorOffsetMs: Double, size: Int64) {
+    init(id: String, fps: Int, durationMs: Double, anchorOffsetMs: Double, size: Int64, width: Int, height: Int) {
       self.id = id
       self.fps = fps
       self.durationMs = durationMs
       self.anchorOffsetMs = anchorOffsetMs
       self.size = size
+      self.width = width
+      self.height = height
       part = SwingFiles.clipsDir.appendingPathComponent("\(id).b.mp4.part")
       FileManager.default.createFile(atPath: part.path, contents: nil)
       handle = try? FileHandle(forWritingTo: part)
@@ -786,6 +796,7 @@ final class PeerLink {
         return .incomplete
       }
       let json: [String: Any] = [
+        "v": ClipExporter.sidecarVersion,
         "fps": fps,
         "durationMs": durationMs,
         "anchorOffsetMs": anchorOffsetMs,
@@ -793,6 +804,9 @@ final class PeerLink {
         "deviceName": hello?.name ?? NSNull(),
         "syncMs": syncMs ?? NSNull(),
         "nudgeMs": 0,
+        // 0 (an older camera phone) reads as unknown: the library assumes portrait.
+        "width": width,
+        "height": height,
       ]
       let dir = SwingFiles.clipsDir
       // Sidecar first: the library only lists an angle once its .b.mp4 exists.
@@ -942,7 +956,17 @@ final class PeerLink {
   // MARK: - Helpers
 
   /// This phone's Wi-Fi / hotspot address, for typing into the main phone when discovery fails.
+  /// Walking the interfaces costs a few ms, and the status is rebuilt every tick, so the answer is
+  /// kept for `addressCacheInterval` (and dropped when the listener changes).
   private func localAddress() -> String? {
+    let now = ProcessInfo.processInfo.systemUptime
+    if let cachedAddressAt, now - cachedAddressAt < Self.addressCacheInterval { return cachedAddress }
+    cachedAddress = lookUpLocalAddress()
+    cachedAddressAt = now
+    return cachedAddress
+  }
+
+  private func lookUpLocalAddress() -> String? {
     guard let port = listener?.port?.rawValue else { return nil }
     var list: UnsafeMutablePointer<ifaddrs>?
     guard getifaddrs(&list) == 0, let first = list else { return nil }

@@ -4,6 +4,7 @@ import { Chip } from '@/components/chip';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { MAX_CONTENT_WIDTH } from '@/lib/layout';
 import { CLUBS, RESULT_LABEL, SHOT_RESULTS, type Club, type ShotResult } from '@/lib/swing-notes';
 
 /** Two even rows of four, so the buttons line up and are easy to hit. */
@@ -86,6 +87,14 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', gap: Spacing.two },
   club: { minWidth: 56 },
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: Spacing.four },
-  card: { borderRadius: Spacing.four, padding: Spacing.four, gap: Spacing.three, alignItems: 'flex-start' },
+  card: {
+    borderRadius: Spacing.four,
+    padding: Spacing.four,
+    gap: Spacing.three,
+    alignItems: 'flex-start',
+    width: '100%',
+    maxWidth: MAX_CONTENT_WIDTH,
+    alignSelf: 'center',
+  },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two },
 });

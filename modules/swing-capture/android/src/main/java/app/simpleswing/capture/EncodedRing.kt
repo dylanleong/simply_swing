@@ -28,9 +28,6 @@ class EncodedRing(private var windowUs: Long) {
   fun clear() = samples.clear()
 
   @Synchronized
-  fun size(): Int = samples.size
-
-  @Synchronized
   fun oldestPtsUs(): Long? = samples.firstOrNull()?.ptsUs
 
   /**

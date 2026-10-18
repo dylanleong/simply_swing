@@ -9,6 +9,7 @@ import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import {
+  clipAspect,
   filterSwings,
   formatClipTime,
   formatSession,
@@ -21,8 +22,8 @@ import {
 } from '@/lib/swing-library';
 import { CLUBS, notesSummary, RESULT_LABEL, SHOT_RESULTS } from '@/lib/swing-notes';
 
-/** A range session is dozens of swings: three across keeps a session to a screen or two. */
-const COLUMNS = 3;
+/** A range session is dozens of swings: three across keeps a session to a screen or two on a phone. */
+const DEFAULT_COLUMNS = 3;
 const STAR = '#FFC83D';
 
 type Row = { key: string; swings: Swing[] };
@@ -42,6 +43,7 @@ export function SwingBrowser({
   onRefresh,
   empty,
   bottomInset = 0,
+  columns = DEFAULT_COLUMNS,
 }: {
   swings: Swing[];
   filter: SwingFilter;
@@ -54,6 +56,8 @@ export function SwingBrowser({
   onRefresh?: () => void;
   empty: string;
   bottomInset?: number;
+  /** Tiles per row (more on a wide screen; see lib/layout.ts). */
+  columns?: number;
 }) {
   const theme = useTheme();
   const [filterOpen, setFilterOpen] = useState(false);
@@ -62,18 +66,16 @@ export function SwingBrowser({
     () =>
       groupSessions(shown).map((session) => {
         const rows: Row[] = [];
-        for (let i = 0; i < session.swings.length; i += COLUMNS) {
-          const group = session.swings.slice(i, i + COLUMNS);
+        for (let i = 0; i < session.swings.length; i += columns) {
+          const group = session.swings.slice(i, i + columns);
           rows.push({ key: group.map((s) => s.id).join('|'), swings: group });
         }
         return { key: `${session.start}`, title: formatSession(session), count: session.swings.length, data: rows };
       }),
-    [shown]
+    [shown, columns]
   );
-  const filtering = filter.club != null || filter.result != null || filter.favorites;
-  const summary = [filter.favorites && '★ Favourites', filter.club, filter.result && RESULT_LABEL[filter.result]]
-    .filter(Boolean)
-    .join(' · ');
+  const active = [filter.favorites && 'Favourites', filter.club, filter.result && RESULT_LABEL[filter.result]].filter(Boolean);
+  const filtering = active.length > 0;
 
   return (
     <>
@@ -88,23 +90,28 @@ export function SwingBrowser({
         ListHeaderComponent={
           swings.length > 0 ? (
             <View style={styles.filterBar}>
+              {/* A fixed label with a count, so the chip (and the × beside it) never grows or moves. */}
               <Chip
                 variant="option"
                 size="sm"
                 icon="ion:filter"
                 selected={filtering}
-                label={filtering ? summary : 'Filter'}
+                label={filtering ? `Filter · ${active.length}` : 'Filter'}
+                accessibilityLabel={filtering ? `Filter: ${active.join(', ')}. Change filter` : 'Filter'}
+                hitSlop={6}
                 onPress={() => setFilterOpen(true)}
               />
-              {filtering && (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Clear filter"
-                  hitSlop={8}
-                  onPress={() => onFilterChange(NO_FILTER)}>
-                  <Icon name="ion:close-circle" size={22} color={theme.textSecondary} />
-                </Pressable>
-              )}
+              <View style={styles.clearSlot}>
+                {filtering && (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Clear filter"
+                    hitSlop={11}
+                    onPress={() => onFilterChange(NO_FILTER)}>
+                    <Icon name="ion:close-circle" size={22} color={theme.textSecondary} />
+                  </Pressable>
+                )}
+              </View>
             </View>
           ) : null
         }
@@ -128,7 +135,7 @@ export function SwingBrowser({
                 onLongPress={onLongPress && (() => onLongPress(s))}
               />
             ))}
-            {Array.from({ length: COLUMNS - item.swings.length }, (_, i) => (
+            {Array.from({ length: columns - item.swings.length }, (_, i) => (
               <View key={i} style={styles.tile} />
             ))}
           </View>
@@ -211,7 +218,7 @@ function SwingTile({
     <Pressable
       accessibilityRole={selecting ? 'checkbox' : 'button'}
       accessibilityState={selecting ? { checked: selected } : undefined}
-      accessibilityLabel={`Swing at ${formatClipTime(swing.createdAt)}${tags ? `, ${tags}` : ''}`}
+      accessibilityLabel={`Swing at ${formatClipTime(swing.createdAt)}${tags ? `, ${tags}` : ''}${swing.angle ? ', 2 angles' : ''}`}
       onPress={onPress}
       onLongPress={onLongPress}
       style={({ pressed }) => [styles.tile, { opacity: pressed ? 0.7 : 1 }]}>
@@ -221,7 +228,10 @@ function SwingTile({
           { backgroundColor: theme.backgroundElement },
           selected && { borderColor: theme.accent, borderWidth: 3 },
         ]}>
-        {swing.thumbUri && <Image source={swing.thumbUri} style={StyleSheet.absoluteFill} contentFit="cover" />}
+        {/* A landscape clip (tablet on its side) is letterboxed rather than cropped to a strip. */}
+        {swing.thumbUri && (
+          <Image source={swing.thumbUri} style={StyleSheet.absoluteFill} contentFit={clipAspect(swing) > 1 ? 'contain' : 'cover'} />
+        )}
         {swing.notes.favorite && (
           <View style={styles.star}>
             <Icon name="ion:star" size={16} color={STAR} />
@@ -264,6 +274,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.three,
     paddingBottom: Spacing.two,
   },
+  clearSlot: { width: 22, height: 22, alignItems: 'center', justifyContent: 'center' },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'baseline',

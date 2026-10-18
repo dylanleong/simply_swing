@@ -20,7 +20,7 @@ import org.json.JSONObject
  *   both   → STATE   {state}                      engine state; the camera follows armed/standby
  *   main   → TRIGGER {id, startUs, endUs, anchorUs}
  *   camera → REJECT  {id, reason}               id "" + reason "code" / "wait": pairing refused
- *   camera → CLIP    {id, fps, durationMs, anchorOffsetMs, size}, then DATA… and DONE {id}
+ *   camera → CLIP    {id, fps, durationMs, anchorOffsetMs, size, width?, height?}, then DATA… and DONE {id}
  *   both   → BYE     {}
  */
 sealed class PeerMessage {
@@ -55,6 +55,9 @@ sealed class PeerMessage {
     /** Where the anchor instant falls in the clip (may lie outside it). */
     val anchorOffsetMs: Double,
     val size: Long,
+    /** Upright size of the clip; 0 from an app that didn't send it (assume portrait). */
+    val width: Int = 0,
+    val height: Int = 0,
   ) : PeerMessage()
 
   class Data(val bytes: ByteArray, val length: Int = bytes.size) : PeerMessage()
@@ -176,6 +179,7 @@ object PeerProtocol {
       is PeerMessage.Clip -> {
         j.put("id", message.id).put("fps", message.fps).put("durationMs", message.durationMs)
           .put("anchorOffsetMs", message.anchorOffsetMs).put("size", message.size)
+          .put("width", message.width).put("height", message.height)
         CLIP
       }
       is PeerMessage.Done -> {
@@ -200,6 +204,7 @@ object PeerProtocol {
     REJECT -> PeerMessage.Reject(j.getString("id"), j.optString("reason"))
     CLIP -> PeerMessage.Clip(
       j.getString("id"), j.getInt("fps"), j.getDouble("durationMs"), j.getDouble("anchorOffsetMs"), j.getLong("size"),
+      j.optInt("width"), j.optInt("height"),
     )
     DONE -> PeerMessage.Done(j.getString("id"))
     BYE -> PeerMessage.Bye

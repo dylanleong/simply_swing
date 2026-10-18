@@ -3,7 +3,9 @@ import Foundation
 /**
  WatchConnectivity messages shared with modules/swing-capture/ios/WatchBridge.swift — keep in sync.
  The same conversation as the Wear OS paths (wear/.../WearProtocol.kt, WearBridge.kt), but each
- message is a dictionary ["t": type, ...fields] instead of a path + text payload:
+ message is a dictionary ["t": type, "v": protocol version, ...fields] instead of a path + text
+ payload. A message without "v" is from an app before versioning (version 0), so a future phone can
+ tell the golfer to update the watch app:
 
    watch → phone  hello                 ask for current state (the phone answers with state + config)
    watch → phone  trigger               tap-to-save
@@ -25,6 +27,9 @@ import Foundation
  */
 enum WatchProtocol {
   static let typeKey = "t"
+  /// Protocol version, in every message under `versionKey`.
+  static let version = 1
+  static let versionKey = "v"
 
   static let hello = "hello"
   static let trigger = "trigger"
@@ -53,11 +58,16 @@ enum WatchProtocol {
   static let modes: Set<String> = [modeAuto, modeTap, modeOff]
 
   static func message(_ type: String) -> [String: Any] {
-    [typeKey: type]
+    [typeKey: type, versionKey: version]
   }
 
   static func type(of message: [String: Any]) -> String? {
     message[typeKey] as? String
+  }
+
+  /// The sender's protocol version; 0 for an app before versioning (no "v").
+  static func version(of message: [String: Any]) -> Int {
+    max(0, message[versionKey] as? Int ?? 0)
   }
 
   /// A swing that peaked ageMs ago, all integers (the phone drops ageMs outside 0...60 000). Tempo
@@ -65,6 +75,7 @@ enum WatchProtocol {
   static func swingMessage(_ swing: SwingDetector.Swing, ageMs: Int64) -> [String: Any] {
     var message: [String: Any] = [
       typeKey: Self.swing,
+      versionKey: version,
       ageMsKey: Int(ageMs),
       peakDpsKey: Int(swing.peakDps),
     ]
@@ -79,6 +90,7 @@ enum WatchProtocol {
   static func pong(for ping: [String: Any]) -> [String: Any] {
     var reply = ping
     reply[typeKey] = pong
+    reply[versionKey] = version
     return reply
   }
 

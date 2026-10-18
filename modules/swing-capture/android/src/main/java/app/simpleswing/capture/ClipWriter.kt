@@ -35,6 +35,7 @@ object ClipWriter {
     video: List<EncodedSample>,
     audioFormat: MediaFormat?,
     audio: List<EncodedSample>,
+    /** Rotation hint that shows the stored (sensor-oriented) frames upright; see Orientation. */
     orientationDegrees: Int,
     impactUs: Long?,
     anchorUs: Long,
@@ -162,10 +163,10 @@ object ClipWriter {
 
   /**
    * `swing_123.json` beside `swing_123.mp4`: what the library needs without opening the video.
-   * Keys mirror ClipReadyEvent plus `createdAt` (epoch ms).
+   * Keys mirror ClipReadyEvent plus `createdAt` (epoch ms) and `v` ([SIDECAR_VERSION]).
    */
   fun writeSidecar(clip: File, info: Map<String, Any?>) {
-    val json = JSONObject()
+    val json = JSONObject().put("v", SIDECAR_VERSION)
     info.forEach { (k, v) -> json.put(k, v ?: JSONObject.NULL) }
     File(clip.parentFile, clip.nameWithoutExtension + ".json").writeText(json.toString())
   }
@@ -175,7 +176,7 @@ object ClipWriter {
     return try {
       retriever.setDataSource(clip.path)
       var frame = retriever.getFrameAtTime(atUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: return null
-      // Some decoders return the frame un-rotated; the clip is portrait, so rotate if it isn't.
+      // Some decoders return the frame un-rotated; a quarter-turn clip is portrait, so rotate if it isn't.
       if ((orientationDegrees == 90 || orientationDegrees == 270) && frame.width > frame.height) {
         frame = Bitmap.createBitmap(frame, 0, 0, frame.width, frame.height, Matrix().apply { postRotate(orientationDegrees.toFloat()) }, true)
       }
@@ -190,6 +191,9 @@ object ClipWriter {
       retriever.release()
     }
   }
+
+  /** `v` in the `.json` and `.b.json` sidecars, so a future reader can tell old files apart. */
+  const val SIDECAR_VERSION = 1
 
   private const val THUMB_WIDTH = 360
   private const val MIN_FREE_BYTES = 100L * 1024 * 1024

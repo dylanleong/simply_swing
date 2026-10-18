@@ -14,11 +14,13 @@ struct WrittenClip {
 
 /// Stitches rolling-buffer chunks into a trimmed clip, makes thumbnails, sidecars and slow-mo copies.
 enum ClipExporter {
-  /// Stitches [chunks] (chronological) and trims to [window]. Passthrough: no re-encode.
+  /// Stitches [chunks] (chronological) and trims to [window]. Passthrough: no re-encode. [transform]
+  /// shows the frames upright for how the device was held when the clip was triggered.
   static func export(
     chunks: [ChunkRecorder.Chunk],
     window: ClipWindow,
     to output: URL,
+    transform: CGAffineTransform,
     thumbnail: Bool = true
   ) async throws -> WrittenClip {
     guard let first = chunks.first else { throw CaptureException("No video in clip window") }
@@ -29,7 +31,6 @@ enum ClipExporter {
 
     // Chunks follow each other within a frame, so laying them end to end keeps clip time ≈ capture time - first.start.
     var cursor = CMTime.zero
-    var transform = CGAffineTransform.identity
     for chunk in chunks {
       let asset = AVURLAsset(url: chunk.url)
       let duration = try await asset.load(.duration)
@@ -37,7 +38,6 @@ enum ClipExporter {
       let range = CMTimeRange(start: .zero, duration: duration)
       if let src = try await asset.loadTracks(withMediaType: .video).first {
         try videoTrack.insertTimeRange(range, of: src, at: cursor)
-        transform = try await src.load(.preferredTransform)
       }
       if let audioTrack, let src = try await asset.loadTracks(withMediaType: .audio).first {
         try? audioTrack.insertTimeRange(range, of: src, at: cursor)
@@ -73,9 +73,12 @@ enum ClipExporter {
     )
   }
 
-  /// `swing_123.json` beside `swing_123.mp4`; same keys as Android (ClipReadyEvent + createdAt).
+  /// `v` in the `.json` and `.b.json` sidecars, so a future reader can tell old files apart (ClipWriter.SIDECAR_VERSION).
+  static let sidecarVersion = 1
+
+  /// `swing_123.json` beside `swing_123.mp4`; same keys as Android (ClipReadyEvent + createdAt + v).
   static func writeSidecar(for clip: URL, info: [String: Any?]) {
-    var json: [String: Any] = [:]
+    var json: [String: Any] = ["v": sidecarVersion]
     for (key, value) in info {
       json[key] = value ?? NSNull()
     }
@@ -147,8 +150,8 @@ enum ClipExporter {
     let slow = CMTimeMultiply(durationA, multiplier: Int32(factor))
     composition.scaleTimeRange(full, toDuration: slow)
 
-    let panel = CGSize(width: 720, height: 1280)
-    let gap: CGFloat = 16
+    let panel = panelSize(a: try await shownSize(srcA), b: try await shownSize(srcB))
+    let gap = Self.gap
     let layerA = AVMutableVideoCompositionLayerInstruction(assetTrack: trackA)
     layerA.setTransform(try await fit(srcA, in: CGRect(origin: .zero, size: panel)), at: .zero)
     let layerB = AVMutableVideoCompositionLayerInstruction(assetTrack: trackB)
@@ -171,6 +174,37 @@ enum ClipExporter {
     session.videoComposition = videoComposition
     session.outputFileType = .mp4
     try await run(session, to: output)
+  }
+
+  static let gap: CGFloat = 16
+  /// Panel height for portrait clips (phones) and for two landscape clips (an iPad on its side).
+  private static let portraitPanelHeight: CGFloat = 1280
+  private static let landscapePanelHeight: CGFloat = 720
+  /// Widest frame the encoder is asked for (4K); two landscape panels are shrunk to fit it.
+  private static let maxOutputWidth: CGFloat = 4096
+  private static let align: CGFloat = 16
+
+  /// Panel size for two clips of upright sizes [a] and [b] (SideBySideExporter.Panels on Android):
+  /// 720x1280 for portrait clips, 720 tall for two landscape ones, the taller for a mix, and shrunk
+  /// together so the whole frame stays within [maxOutputWidth]. Sizes are multiples of 16.
+  static func panelSize(a: CGSize, b: CGSize) -> CGSize {
+    func aspect(_ s: CGSize) -> CGFloat { s.width > 0 && s.height > 0 ? s.width / s.height : 9 / 16 }
+    let anyPortrait = a.height > a.width || b.height > b.width
+    var height = anyPortrait ? portraitPanelHeight : landscapePanelHeight
+    var width = (height * max(aspect(a), aspect(b))).rounded()
+    let maxPanelWidth = ((maxOutputWidth - gap) / 2).rounded(.down)
+    if width > maxPanelWidth {
+      height = (height * maxPanelWidth / width).rounded(.down)
+      width = maxPanelWidth
+    }
+    func aligned(_ n: CGFloat) -> CGFloat { max(align, (n / align).rounded(.down) * align) }
+    return CGSize(width: aligned(width), height: aligned(height))
+  }
+
+  /// [track]'s size as shown upright (its transform applied).
+  private static func shownSize(_ track: AVAssetTrack) async throws -> CGSize {
+    let (size, transform) = try await track.load(.naturalSize, .preferredTransform)
+    return CGRect(origin: .zero, size: size).applying(transform).size
   }
 
   /// Shows [track] upright, scaled to fit inside [rect] and centred in it.
@@ -220,7 +254,8 @@ enum ClipExporter {
   private static func writeThumbnail(for clip: URL, at seconds: Double) async -> URL? {
     let generator = AVAssetImageGenerator(asset: AVURLAsset(url: clip))
     generator.appliesPreferredTrackTransform = true
-    generator.maximumSize = CGSize(width: 360, height: 640)
+    // 360 wide for a portrait clip, 640 wide for a landscape one (as ClipWriter's thumbnails are).
+    generator.maximumSize = CGSize(width: 640, height: 640)
     let tolerance = CMTime(seconds: 0.05, preferredTimescale: 600)
     generator.requestedTimeToleranceBefore = tolerance
     generator.requestedTimeToleranceAfter = tolerance

@@ -88,10 +88,6 @@ class MotionGate(
     return Verdict(peak, threshold, peak >= threshold)
   }
 
-  /** Latest motion level, for on-screen calibration. */
-  @Synchronized
-  fun latest(): Double? = energies.lastOrNull()
-
   /** Peak motion over the last [spanUs] (the UI samples twice a second; a downswing lasts ~0.3 s). */
   @Synchronized
   fun peakSince(nowUs: Long, spanUs: Long): Double? {

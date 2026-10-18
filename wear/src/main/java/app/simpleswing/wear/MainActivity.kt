@@ -120,13 +120,15 @@ class MainActivity : ComponentActivity(), MessageClient.OnMessageReceivedListene
     sendToPhone(WearProtocol.PATH_TRIGGER)
   }
 
+  /** Hello carries the protocol version so the phone can tell an old watch app from a new one. */
   private fun sendToPhone(path: String) {
+    val payload = if (path == WearProtocol.PATH_HELLO) WearProtocol.VERSION.toString().toByteArray() else ByteArray(0)
     nodes.connectedNodes
       .addOnSuccessListener { phones ->
         if (phones.isEmpty()) {
           status = PhoneStatus.NO_PHONE
         } else {
-          phones.forEach { messages.sendMessage(it.id, path, ByteArray(0)) }
+          phones.forEach { messages.sendMessage(it.id, path, payload) }
         }
       }
       .addOnFailureListener { status = PhoneStatus.NO_PHONE }

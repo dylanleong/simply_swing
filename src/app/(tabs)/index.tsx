@@ -19,6 +19,7 @@ import { ClubPicker, ResultChips } from '@/components/shot-tags';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useCapturePermission } from '@/hooks/use-capture-permission';
+import { useLayout } from '@/hooks/use-layout';
 import { PAIRING_ERROR_CODES, useMainPeerLink } from '@/hooks/use-main-peer-link';
 import { useTheme } from '@/hooks/use-theme';
 import {
@@ -31,8 +32,11 @@ import {
 } from '@/lib/capture-settings';
 import { loadCaptureSettings, saveCaptureSettings } from '@/lib/capture-settings-store';
 import { CLIP_BUFFER_OPTIONS } from '@/lib/clip-playback';
+import { friendlyEngineError, friendlyEngineFailure } from '@/lib/engine-errors';
 import { idlePhase, shouldDim, type IdlePhase } from '@/lib/idle';
+import { previewAspect } from '@/lib/layout';
 import { formatSync } from '@/lib/multicam';
+import { frameRateHint, loopSeekSec, replayStartMs } from '@/lib/replay-start';
 import { dimScreen, restoreScreen } from '@/lib/screen-dimmer';
 import type { ShotResult } from '@/lib/swing-notes';
 import { SAVE_FAILED } from '@/lib/storage-alert';
@@ -80,10 +84,21 @@ const KEEP_AWAKE_TAG = 'capture';
 const formatShutter = (sec: number) => (sec >= 1 ? `${sec.toFixed(1)} s` : `1/${Math.round(1 / sec)} s`);
 
 const REPLAY_RATE = 0.25;
-/** The replay covers the live camera; hand the screen back after a few loops. */
-const REPLAY_AUTO_CLOSE_MS = 20_000;
+/**
+ * The replay loops until it's tapped, tagged, a new swing lands or the app goes to the background.
+ * This is only a safety net for a phone left on its tripod with a replay up.
+ */
+const REPLAY_SAFETY_CLOSE_MS = 120_000;
+/** How often the replay checks it hasn't looped back before its start point. */
+const REPLAY_TICK_SEC = 0.25;
 /** The hint covers the top of the frame; once recording, get out of the way. */
 const HINT_VISIBLE_MS = 6_000;
+/** The frame-rate fallback line shows this long, once per launch per rate. */
+const FPS_HINT_MS = 8_000;
+/** Which fallback rates have been pointed out this launch. */
+const fpsHintShown = new Set<number>();
+/** Two lines of the hint text, so the level bar and error line below don't move when it fades. */
+const HINT_SLOT_HEIGHT = 48;
 
 const SOUND_OUTCOME: Record<NonNullable<SoundEvent['reason']> | 'saved', string> = {
   saved: 'saved',
@@ -104,10 +119,9 @@ function describeSound(e: SoundEvent) {
   return `Last sound ${Math.round(e.levelDb)} dB (needs ${Math.round(e.minLevelDb)})${swing} · ${outcome}`;
 }
 
-/** The camera image inside the preview view: the native side letterboxes ("contain") it. */
-function previewFrame(view: LayoutRectangle, format: ActiveFormat | null | undefined): PreviewFrame {
-  // Stream sizes are landscape (sensor orientation); the preview is shown portrait.
-  const aspect = format ? format.height / format.width : 9 / 16;
+/** The camera image inside the preview view: the native side letterboxes ("contain") it, upright. */
+function previewFrame(view: LayoutRectangle, format: ActiveFormat | null | undefined, landscape: boolean): PreviewFrame {
+  const aspect = previewAspect(format, landscape);
   let width = view.width;
   let height = width / aspect;
   if (height > view.height) {
@@ -120,7 +134,7 @@ function previewFrame(view: LayoutRectangle, format: ActiveFormat | null | undef
 /** `file:///…/swing_123.mp4` → `swing_123` (the library's id). */
 const swingIdFromUri = (uri: string) => uri.slice(uri.lastIndexOf('/') + 1).replace(/\.mp4$/, '');
 
-function instruction(state: EngineState, auto: boolean) {
+function instruction(state: EngineState, auto: boolean): string | null {
   switch (state) {
     case 'idle':
       return 'Starting camera…';
@@ -132,7 +146,7 @@ function instruction(state: EngineState, auto: boolean) {
         ? 'Stand in the box and hit. Swings save automatically.'
         : 'Swing, then tap SAVE or press a volume button.';
     case 'standby':
-      return 'Standby to save battery. Step into the box or tap the screen to resume.';
+      return null; // The standby card in the middle of the screen says it.
   }
 }
 
@@ -154,6 +168,9 @@ export default function CaptureScreen() {
 
 function Recorder() {
   const theme = useTheme();
+  const { isLarge, isLandscape } = useLayout();
+  /** A tablet on its side: the controls move to a column on the right and the preview takes the rest. */
+  const sideColumn = isLarge && isLandscape;
   const [settings, setSettings] = useState<CaptureSettings>(loadCaptureSettings);
   // Read by the focus effect so returning to the tab restarts with current preferences.
   const settingsRef = useRef(settings);
@@ -179,6 +196,7 @@ function Recorder() {
   const { resume: resumeLink } = link;
   /** The hint that has faded out; a different hint (new state) shows again. */
   const [fadedHint, setFadedHint] = useState<string | null>(null);
+  const [fpsHint, setFpsHint] = useState<string | null>(null);
   const stateEvent = useEvent(SwingCapture, 'onStateChange');
   const state = stateEvent?.state ?? 'idle';
   const format = stateEvent?.format;
@@ -229,7 +247,7 @@ function Recorder() {
       pruneOldSwingsOnce(current.autoDeleteDays);
       setLastSwing(latestSwing());
       resumeLink();
-      SwingCapture.startAsync(captureConfig(current)).catch((e: Error) => setError(e.message));
+      SwingCapture.startAsync(captureConfig(current)).catch((e: unknown) => setError(friendlyEngineFailure(e)));
       return () => {
         focusedRef.current = false;
         SwingCapture.stopAsync().catch(() => {});
@@ -245,7 +263,7 @@ function Recorder() {
   useEffect(() => {
     const subs = [
       SwingCapture.addListener('onError', (e) => {
-        if (!PAIRING_ERROR_CODES.includes(e.code)) setError(e.message);
+        if (!PAIRING_ERROR_CODES.includes(e.code)) setError(friendlyEngineError(e.code, e.message));
       }),
       // A new swing interrupts the replay so the golfer sees the latest one.
       SwingCapture.addListener('onTrigger', () => {
@@ -274,6 +292,15 @@ function Recorder() {
         if (e.state === 'armed' && sawStandbyRef.current) {
           sawStandbyRef.current = false;
           markActive();
+        }
+        // Say once per launch (per rate) when the camera couldn't give the frame rate Settings asks for.
+        const activeFps = e.format?.fps;
+        if (e.state === 'armed' && activeFps != null && !fpsHintShown.has(activeFps)) {
+          const hint = frameRateHint(settingsRef.current.fps, activeFps);
+          if (hint) {
+            fpsHintShown.add(activeFps);
+            setFpsHint(hint);
+          }
         }
       }),
       SwingCapture.addListener('onExposure', setExposure),
@@ -332,31 +359,54 @@ function Recorder() {
 
   useEffect(() => {
     if (!clip) return;
-    const timer = setTimeout(() => setClip(null), REPLAY_AUTO_CLOSE_MS);
+    const timer = setTimeout(() => setClip(null), REPLAY_SAFETY_CLOSE_MS);
     return () => clearTimeout(timer);
   }, [clip]);
+
+  // The frame-rate fallback line fades by itself (it's set from the engine's state event below).
+  useEffect(() => {
+    if (!fpsHint) return;
+    const timer = setTimeout(() => setFpsHint(null), FPS_HINT_MS);
+    return () => clearTimeout(timer);
+  }, [fpsHint]);
 
   // Show the hint whenever what it says changes; fade it once the camera is just recording.
   const hintKey = `${state}|${settings.soundTrigger}|${clip ? 'replay' : 'live'}`;
   const hintVisible = fadedHint !== hintKey;
+  const hintText = clip ? 'Tap the video to go back to the camera.' : instruction(state, settings.soundTrigger);
   useEffect(() => {
     if (!hintKey.startsWith('armed|') || hintKey.endsWith('|replay')) return;
     const timer = setTimeout(() => setFadedHint(hintKey), HINT_VISIBLE_MS);
     return () => clearTimeout(timer);
   }, [hintKey]);
 
+  // Play from just before the swing, and loop from there: expo-video's own loop restarts at 0, so
+  // whenever the time wraps to before the start point, seek back to it.
   useEffect(() => {
     if (!clip) {
       player.pause();
       return;
     }
+    const startSec = replayStartMs(clip, settingsRef.current.lookbackSec) / 1000;
+    let cancelled = false;
+    const sub = player.addListener('timeUpdate', (e) => {
+      const back = loopSeekSec(e.currentTime, startSec);
+      if (back != null) player.currentTime = back;
+    });
     player
       .replaceAsync(clip.uri)
       .then(() => {
+        if (cancelled) return;
+        player.timeUpdateEventInterval = REPLAY_TICK_SEC;
         player.playbackRate = REPLAY_RATE;
+        player.currentTime = startSec;
         player.play();
       })
       .catch((e: Error) => setError(e.message));
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
   }, [clip, player]);
 
   const onSave = () => {
@@ -400,12 +450,14 @@ function Recorder() {
   const statusColor = state === 'armed' ? '#FF3B30' : saving ? '#FFB020' : '#9BA1A6';
   const statusLabel =
     state === 'armed' ? 'Recording' : saving ? 'Saving' : state === 'standby' ? 'Standby' : 'Starting';
-  const frame = viewLayout ? previewFrame(viewLayout, format) : null;
+  const frame = viewLayout ? previewFrame(viewLayout, format, isLandscape) : null;
+  // With the controls beside the preview nothing covers its bottom edge.
+  const bottomLimit = sideColumn ? (viewLayout ? viewLayout.height + BOX_GAP : null) : bottomBarTop;
   const bounds: RoiBounds =
-    frame && bottomBarTop != null
+    frame && bottomLimit != null
       ? {
           minY: Math.max(0, (topControlsBottom + BOX_GAP - frame.top) / frame.height),
-          maxY: Math.min(1, (bottomBarTop - BOX_GAP - frame.top) / frame.height),
+          maxY: Math.min(1, (bottomLimit - BOX_GAP - frame.top) / frame.height),
         }
       : FULL_BOUNDS;
   // What the box (and the motion gate) actually uses on this screen.
@@ -419,9 +471,12 @@ function Recorder() {
     SwingCapture.setRoi({ x, y, width, height });
   }, [roiKey, state]);
 
+  // The preview (and everything drawn on it) stops where the side column starts.
+  const previewArea = sideColumn ? [StyleSheet.absoluteFill, styles.besideColumn] : StyleSheet.absoluteFill;
+
   return (
     <View style={styles.black} onTouchStart={markActive}>
-      <SwingCaptureView style={StyleSheet.absoluteFill} onLayout={(e) => setViewLayout(e.nativeEvent.layout)} />
+      <SwingCaptureView style={previewArea} onLayout={(e) => setViewLayout(e.nativeEvent.layout)} />
 
       {frame && !clip && (
         <GolferBox
@@ -435,14 +490,14 @@ function Recorder() {
       )}
 
       {state === 'standby' && !clip && (
-        <View style={styles.standby} pointerEvents="none">
+        <View style={[styles.standby, sideColumn && { right: SIDE_COLUMN + Spacing.five }]} pointerEvents="none">
           <ThemedText style={styles.standbyTitle}>Standby</ThemedText>
           <ThemedText style={styles.standbyText}>Step into the box or tap the screen to resume recording.</ThemedText>
         </View>
       )}
 
       {clip && (
-        <View style={StyleSheet.absoluteFill}>
+        <View style={previewArea}>
           <VideoView player={player} style={StyleSheet.absoluteFill} contentFit="contain" nativeControls={false} />
           {/* On top, not around: the native video view swallows touches on Android. */}
           <Pressable
@@ -452,14 +507,14 @@ function Recorder() {
             onPress={() => setClip(null)}
           />
           {viewLayout && bottomBarTop != null && (
-            <View style={[styles.tagPanel, { bottom: viewLayout.height - bottomBarTop + BOX_GAP }]}>
+            <View style={[styles.tagPanel, { bottom: sideColumn ? Spacing.three : viewLayout.height - bottomBarTop + BOX_GAP }]}>
               <View style={styles.tagHeader}>
                 <ThemedText style={styles.tagTitle}>
                   {settings.club ? `How was that ${settings.club}?` : 'How was it?'}
                 </ThemedText>
                 {replayTempo && <ThemedText style={styles.tagTempo}>{`Tempo ${formatTempoRatio(replayTempo)}`}</ThemedText>}
                 <View style={styles.flex} />
-                <Pressable accessibilityRole="button" onPress={() => tagReplay(null)} hitSlop={10}>
+                <Pressable accessibilityRole="button" onPress={() => tagReplay(null)} hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}>
                   <ThemedText style={styles.skip}>Skip</ThemedText>
                 </Pressable>
               </View>
@@ -470,7 +525,7 @@ function Recorder() {
       )}
 
       {/* Top: status + one instruction. Tap the pill for live levels. */}
-      <SafeAreaView edges={['top']} style={styles.top} pointerEvents="box-none">
+      <SafeAreaView edges={['top']} style={[styles.top, sideColumn && styles.besideColumn]} pointerEvents="box-none">
         <View
           style={styles.topRow}
           pointerEvents="box-none"
@@ -482,7 +537,7 @@ function Recorder() {
             style={styles.pill}>
             <View style={[styles.dot, { backgroundColor: statusColor }]} />
             <ThemedText style={styles.pillText}>{clip ? 'Replay · ¼ speed' : statusLabel}</ThemedText>
-            {watch.sensing && !clip && <ThemedText style={styles.watchBadge}>⌚</ThemedText>}
+            {watch.sensing && !clip && <ThemedText style={[styles.watchBadge, { color: theme.accent }]}>⌚</ThemedText>}
           </Pressable>
           <View style={styles.flex} />
           <View style={styles.topButtons} pointerEvents="box-none">
@@ -504,7 +559,7 @@ function Recorder() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={
-                link.connected ? 'Second camera connected' : link.enabled ? 'Second camera: searching' : 'Add a second camera'
+                link.connected ? 'Second camera, connected' : link.enabled ? 'Second camera, searching' : 'Second camera'
               }
               onPress={() => {
                 if (!link.enabled) link.turnOn();
@@ -520,14 +575,22 @@ function Recorder() {
             <IconButton icon="ion:help" accessibilityLabel="How it works" onDark size={40} onPress={() => setShowHelp(true)} />
           </View>
         </View>
-        {hintVisible && (
-          <Animated.View entering={FadeIn} exiting={FadeOut} pointerEvents="none">
-            <ThemedText type="small" style={styles.instruction}>
-              {clip ? 'Tap the video to go back to the camera.' : instruction(state, settings.soundTrigger)}
-            </ThemedText>
-          </Animated.View>
+        {/* A fixed slot: the hint fades, but the level bar and error line below stay put. */}
+        <View style={styles.hintSlot} pointerEvents="none">
+          {hintVisible && hintText && (
+            <Animated.View entering={FadeIn} exiting={FadeOut}>
+              <ThemedText type="small" style={styles.instruction}>
+                {hintText}
+              </ThemedText>
+            </Animated.View>
+          )}
+        </View>
+        {fpsHint && !clip && (
+          <ThemedText type="small" style={styles.instruction} pointerEvents="none">
+            {fpsHint}
+          </ThemedText>
         )}
-        <LevelIndicator active={!clip && state !== 'standby'} />
+        <LevelIndicator active={!clip && state !== 'standby'} landscape={isLandscape} />
         {error && (
           <ThemedText type="small" style={[styles.instruction, styles.error]} pointerEvents="none">
             {error}
@@ -577,9 +640,9 @@ function Recorder() {
         )}
       </SafeAreaView>
 
-      {/* Bottom: camera-style controls, kept to the edge so the frame stays clear. */}
+      {/* Bottom: camera-style controls, kept to the edge so the frame stays clear (a column on the right of a tablet on its side). */}
       <View
-        style={styles.bottom}
+        style={sideColumn ? styles.sideBar : styles.bottom}
         pointerEvents="box-none"
         onLayout={(e) => setBottomBarTop(e.nativeEvent.layout.y)}>
         <Pressable
@@ -629,7 +692,7 @@ function Recorder() {
             </View>
           )}
           {sessionCount > 0 && (
-            <View style={[styles.countBadge, { backgroundColor: theme.accent }]}>
+            <View style={styles.countBadge}>
               <ThemedText style={styles.countText} maxFontSizeMultiplier={1.3}>
                 {sessionCount}
               </ThemedText>
@@ -666,12 +729,17 @@ function Recorder() {
 }
 
 const SIDE = 56;
+/** The controls column beside the preview on a large landscape screen (the SAVE button plus padding). */
+const SIDE_COLUMN = 128;
 /** Space between the golfer box and the controls above / below it. */
 const BOX_GAP = 12;
 const SCRIM = 'rgba(0,0,0,0.55)';
+/** Neutral chip colour for the session count over the camera. */
+const COUNT_CHIP = '#4A4E55';
 
 const styles = StyleSheet.create({
   black: { flex: 1, backgroundColor: '#000' },
+  besideColumn: { right: SIDE_COLUMN },
   top: { position: 'absolute', top: 0, left: 0, right: 0, paddingHorizontal: Spacing.three, gap: Spacing.one },
   topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: Spacing.two },
   pill: {
@@ -685,7 +753,7 @@ const styles = StyleSheet.create({
   },
   dot: { width: 10, height: 10, borderRadius: 5 },
   pillText: { color: '#fff', fontWeight: '600', fontSize: 15, lineHeight: 20 },
-  watchBadge: { color: '#3DCB7A', fontSize: 14, lineHeight: 20 },
+  watchBadge: { fontSize: 14, lineHeight: 20 },
   flex: { flex: 1 },
   topButtons: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   roundButton: {
@@ -698,6 +766,7 @@ const styles = StyleSheet.create({
   },
   clubText: { color: '#fff', fontWeight: '800', fontSize: 14, lineHeight: 18 },
   statusDot: { position: 'absolute', top: 6, right: 6, width: 9, height: 9, borderRadius: 5, borderWidth: 1.5, borderColor: '#000' },
+  hintSlot: { minHeight: HINT_SLOT_HEIGHT, justifyContent: 'flex-start' },
   instruction: {
     alignSelf: 'flex-start',
     color: '#fff',
@@ -748,6 +817,17 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.three,
     backgroundColor: 'rgba(0,0,0,0.35)',
   },
+  sideBar: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: SIDE_COLUMN,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.five,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+  },
   sideControl: { width: SIDE, height: SIDE, borderRadius: 12 },
   autoChip: {
     borderWidth: 2,
@@ -785,6 +865,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
     alignItems: 'center',
     justifyContent: 'center',
+    // A count, not a state: neutral, like a chip, with white text.
+    backgroundColor: COUNT_CHIP,
+    borderWidth: 1.5,
+    borderColor: '#000',
   },
   countText: { color: '#fff', fontWeight: '700', fontSize: 12, lineHeight: 16 },
 });

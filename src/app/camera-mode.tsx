@@ -20,6 +20,8 @@ import {
   type CaptureSettings,
 } from '@/lib/capture-settings';
 import { loadCaptureSettings, saveCaptureSettings } from '@/lib/capture-settings-store';
+import { friendlyEngineError, friendlyEngineFailure } from '@/lib/engine-errors';
+import { MAX_CONTENT_WIDTH } from '@/lib/layout';
 import { formatSync, VIEW_LABEL } from '@/lib/multicam';
 import { dimScreen, restoreScreen } from '@/lib/screen-dimmer';
 import SwingCapture, {
@@ -102,7 +104,7 @@ function CameraPhone() {
       const s = loadCaptureSettings();
       // Role first, so the engine starts as a camera (no watch, no local triggers).
       SwingCapture.startCameraLink(s.cameraView);
-      SwingCapture.startAsync(cameraConfig(s)).catch((e: Error) => setError(e.message));
+      SwingCapture.startAsync(cameraConfig(s)).catch((e: unknown) => setError(friendlyEngineFailure(e)));
       wake();
       return () => {
         SwingCapture.stopPeerLink();
@@ -126,18 +128,29 @@ function CameraPhone() {
     return () => sub.remove();
   }, [wake]);
 
+  /** Whether the main phone was connected at the last status, to spot the link coming or going. */
+  const wasConnected = useRef(false);
+
   useEffect(() => {
     const subs = [
       SwingCapture.addListener('onPeerStatus', (s) => {
-        if (s.role === 'camera') setStatus(s);
+        if (s.role !== 'camera') return;
+        setStatus(s);
+        // The link dropped (or came back): bring the brightness up so the code and "Waiting…" can be
+        // read from the tee, 3 m away, then let the dim timer run again.
+        const nowConnected = s.state === 'connected';
+        if (nowConnected !== wasConnected.current) {
+          wasConnected.current = nowConnected;
+          wake();
+        }
       }),
-      SwingCapture.addListener('onError', (e) => setError(e.message)),
+      SwingCapture.addListener('onError', (e) => setError(friendlyEngineError(e.code, e.message))),
       SwingCapture.addListener('onStateChange', (e) => {
         if (e.state === 'exporting') setFilmed((n) => n + 1);
       }),
     ];
     return () => subs.forEach((s) => s.remove());
-  }, []);
+  }, [wake]);
 
   const changeView = (next: CameraView) => {
     setView(next);
@@ -187,8 +200,8 @@ function CameraPhone() {
                 </ThemedText>
               )}
               <ThemedText type="small" style={styles.text}>
-                On the main phone, tap + Cam, pick this phone and enter this code. Both phones need the same Wi-Fi
-                or hotspot.
+                On the main phone, tap the camera icon at the top of Capture, pick this phone and enter this code.
+                Both phones need the same Wi-Fi or hotspot.
                 {status?.address ? `\nIf it isn't listed, type ${status.address}` : ''}
               </ThemedText>
             </>
@@ -230,7 +243,16 @@ const styles = StyleSheet.create({
   black: { flex: 1, backgroundColor: '#000' },
   top: { position: 'absolute', top: 0, left: 0, right: 0, padding: Spacing.three },
   bottom: { position: 'absolute', bottom: 0, left: 0, right: 0, padding: Spacing.three },
-  card: { backgroundColor: SCRIM, borderRadius: Spacing.three, padding: Spacing.three, gap: Spacing.two },
+  // Centred and no wider than a phone on a tablet, so the code stays readable from the tee.
+  card: {
+    backgroundColor: SCRIM,
+    borderRadius: Spacing.three,
+    padding: Spacing.three,
+    gap: Spacing.two,
+    width: '100%',
+    maxWidth: MAX_CONTENT_WIDTH,
+    alignSelf: 'center',
+  },
   row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   dot: { width: 10, height: 10, borderRadius: 5 },
   title: { color: '#fff', fontWeight: '700', flexShrink: 1 },

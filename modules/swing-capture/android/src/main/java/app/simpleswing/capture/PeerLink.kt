@@ -109,6 +109,9 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
 
   // Handler-thread state.
   private var server: ServerSocket? = null
+  /** [localAddress] answer and when it was looked up (elapsedRealtime ms; 0 = look up again). */
+  private var cachedAddress: String? = null
+  private var cachedAddressAtMs = 0L
   private var registration: NsdManager.RegistrationListener? = null
   private var discovery: NsdManager.DiscoveryListener? = null
   private val found = LinkedHashMap<String, PeerInfo>()
@@ -196,8 +199,8 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
     return true
   }
 
-  /** Camera role: stream a saved clip to the main phone, then delete it. */
-  fun sendClip(id: String, file: File, fps: Int, durationMs: Double, anchorOffsetMs: Double) {
+  /** Camera role: stream a saved clip to the main phone, then delete it. [width] x [height] is its upright size. */
+  fun sendClip(id: String, file: File, fps: Int, durationMs: Double, anchorOffsetMs: Double, width: Int, height: Int) {
     val c = connection
     if (c == null || role != PeerRole.CAMERA) {
       Log.w(TAG, "Clip $id saved but no main phone connected; dropped")
@@ -207,7 +210,7 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
     sender.execute {
       try {
         val size = file.length()
-        c.write(PeerMessage.Clip(id, fps, durationMs, anchorOffsetMs, size))
+        c.write(PeerMessage.Clip(id, fps, durationMs, anchorOffsetMs, size, width, height))
         val buffer = ByteArray(PeerProtocol.CHUNK_BYTES)
         FileInputStream(file).use { input ->
           while (true) {
@@ -401,6 +404,7 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
       ServerSocket(0) // Port taken (a second app instance?); discovery still finds us.
     }
     server = socket
+    cachedAddressAtMs = 0L
     thread(name = "SwingPeerAccept") {
       while (!socket.isClosed) {
         val client = try {
@@ -438,6 +442,7 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
     registration = null
     server?.close()
     server = null
+    cachedAddressAtMs = 0L
   }
 
   // ---- Main role: discovery ----
@@ -584,6 +589,7 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
         return false
       }
       val json = JSONObject()
+        .put("v", ClipWriter.SIDECAR_VERSION)
         .put("fps", meta.fps)
         .put("durationMs", meta.durationMs)
         .put("anchorOffsetMs", meta.anchorOffsetMs)
@@ -591,6 +597,9 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
         .put("deviceName", hello?.name ?: JSONObject.NULL)
         .put("syncMs", syncMs ?: JSONObject.NULL)
         .put("nudgeMs", 0)
+        // 0 (an older camera phone) reads as unknown: the library assumes portrait.
+        .put("width", meta.width)
+        .put("height", meta.height)
       // Sidecar first: the library only lists an angle once its .b.mp4 exists.
       File(dir, "${meta.id}.b.json").writeText(json.toString())
       if (!part.renameTo(File(dir, "${meta.id}.b.mp4"))) {
@@ -775,8 +784,20 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
   private fun deviceName(): String =
     Settings.Global.getString(context.contentResolver, "device_name")?.takeIf { it.isNotBlank() } ?: Build.MODEL
 
-  /** This phone's Wi-Fi / hotspot address, for typing into the main phone when discovery fails. */
+  /**
+   * This phone's Wi-Fi / hotspot address, for typing into the main phone when discovery fails.
+   * Enumerating interfaces costs a few ms, and the status is rebuilt every tick, so the answer is
+   * kept for [ADDRESS_CACHE_MS] (and dropped when the server restarts).
+   */
   private fun localAddress(): String? {
+    val now = SystemClock.elapsedRealtime()
+    if (cachedAddressAtMs != 0L && now - cachedAddressAtMs < ADDRESS_CACHE_MS) return cachedAddress
+    cachedAddress = lookUpLocalAddress()
+    cachedAddressAtMs = now
+    return cachedAddress
+  }
+
+  private fun lookUpLocalAddress(): String? {
     val port = server?.localPort ?: return null
     val ip = runCatching {
       NetworkInterface.getNetworkInterfaces().toList()
@@ -794,6 +815,7 @@ class PeerLink(private val context: Context, private val clipsDir: () -> File, p
     private const val PREFS = "simpleswing_peer"
     private const val PREF_CODE = "pairCode"
     private const val TICK_MS = 1_000L
+    private const val ADDRESS_CACHE_MS = 10_000L
     private const val PAIRING_TIMEOUT_MS = 5_000L
     /**
      * One wrong code shuts pairing for this long: one guess per 2 s means about 12 days on average

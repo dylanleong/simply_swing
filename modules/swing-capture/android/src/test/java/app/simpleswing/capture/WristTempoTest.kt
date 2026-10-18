@@ -6,6 +6,16 @@ import org.junit.Test
 
 class WristTempoTest {
   @Test
+  fun helloPayloadIsTheWatchProtocolVersion() {
+    assertEquals(1, WearBridge.parseVersion("1"))
+    assertEquals(12, WearBridge.parseVersion(" 12\n"))
+    // Watch apps before versioning sent an empty hello.
+    assertEquals(0, WearBridge.parseVersion(""))
+    assertEquals(0, WearBridge.parseVersion("nope"))
+    assertEquals(0, WearBridge.parseVersion("-3"))
+  }
+
+  @Test
   fun parsesTheOldTwoFieldMessage() {
     assertEquals(WristSwingMessage(120, 1500, null), WristSwingMessage.parse("120,1500"))
   }

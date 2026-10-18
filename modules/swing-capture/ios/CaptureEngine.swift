@@ -66,6 +66,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   private var _config: CaptureConfig?
   private var _format: [String: Any]?
   private var _activeFps = 0
+  /// Clockwise turn that shows sensor frames upright for the interface (from SwingCaptureView); 90 = portrait.
+  private var _previewRotation = 90
   private var lastTrigger = -Double.infinity
 
   // MARK: Capture-queue state
@@ -124,14 +126,17 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     let forPeer: Bool
     /// Play the saved chime (config.savedSound when triggered; never for a camera phone's clips).
     let chime: Bool
+    /// Rotation that shows the clip upright, from how the device was held when it was triggered.
+    let rotation: Int
     var rotateRequested = false
     var exporting = false
 
-    init(source: TriggerSource, window: ClipWindow, fps: Int, id: String, forPeer: Bool = false, chime: Bool = false) {
+    init(source: TriggerSource, window: ClipWindow, fps: Int, id: String, rotation: Int, forPeer: Bool = false, chime: Bool = false) {
       self.source = source
       self.window = window
       self.fps = fps
       self.id = id
+      self.rotation = rotation
       self.forPeer = forPeer
       self.chime = chime && !forPeer
     }
@@ -145,10 +150,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
   private static let exportWatchdog = 3.0
   private static let standbyFps = 30
   private static let motionInterval = 1.0 / 15
-  private static let motionW = 72
-  private static let motionH = 128
-  /// Portrait app, back camera: sensor buffers are landscape and rotated 90° on playback.
-  private static let portraitTransform = CGAffineTransform(rotationAngle: .pi / 2)
+  /// Motion thumbnail: 72x128 when the preview is portrait, 128x72 when it's landscape.
+  private static let motionShort = 72
+  private static let motionLong = 128
 
   private var clipsDir: URL { SwingFiles.clipsDir }
   /// Camera role: clips for the main phone, deleted once sent.
@@ -231,6 +235,12 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
   }
 
+  /// The preview's rotation (see SwingCaptureView): clips triggered from now on and the motion
+  /// thumbnail follow it. Main thread.
+  func setPreviewRotation(_ degrees: Int) {
+    locked { _previewRotation = degrees }
+  }
+
   /// Returns true if the trigger was accepted. `time` defaults to now (button presses).
   @discardableResult
   func trigger(_ source: TriggerSource, at time: Double? = nil) -> Bool {
@@ -259,6 +269,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       window: ClipWindows.forTrigger(source, at: t, config: cfg),
       fps: _activeFps,
       id: "swing_\(Int64(Date().timeIntervalSince1970 * 1000))",
+      rotation: _previewRotation,
       chime: cfg.savedSound
     )
     _state = .triggered
@@ -280,7 +291,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       lock.unlock()
       return false
     }
-    let clip = PendingClip(source: .manual, window: window, fps: _activeFps, id: id, forPeer: true)
+    let clip = PendingClip(source: .manual, window: window, fps: _activeFps, id: id, rotation: _previewRotation, forPeer: true)
     _state = .triggered
     let format = _format
     lock.unlock()
@@ -435,12 +446,14 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     let audio = audioInput == nil ? nil : audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: .mp4) as? [String: Any]
 
     // Each recorder has its own folder: one that's stopping may still be saving a clip from its chunks.
+    // The chunks' own transform only matters for a chunk file viewed on its own: the exported clip
+    // gets the rotation at trigger time (PendingClip.rotation).
     return ChunkRecorder(
       dir: chunkDir.appendingPathComponent(UUID().uuidString, isDirectory: true),
       queue: queue,
       videoSettings: video,
       audioSettings: audio,
-      transform: Self.portraitTransform,
+      transform: Orientation.transform(for: locked { _previewRotation }),
       onChunk: { [weak self] chunk in self?.onChunkFinished(chunk) },
       onError: { [weak self] code, message in self?.listener?.engineError(code: code, message: message) }
     )
@@ -631,7 +644,8 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     PeerProtocol.micros(fromSeconds: now()) ?? 0
   }
 
-  /// Upright 72x128 luma thumbnail from the landscape Y plane (rotated 90° clockwise, 2x2 averaged).
+  /// Upright luma thumbnail (72x128 portrait, 128x72 landscape) from the landscape Y plane, turned
+  /// by the preview's rotation so the golfer box maps 1:1 with the screen, 2x2 averaged.
   private func sampleMotion(_ sample: CMSampleBuffer, time: Double) {
     guard let pixels = CMSampleBufferGetImageBuffer(sample) else { return }
     CVPixelBufferLockBaseAddress(pixels, .readOnly)
@@ -643,16 +657,17 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     guard w > 2, h > 2 else { return }
     let y = base.assumingMemoryBound(to: UInt8.self)
 
-    let mw = Self.motionW
-    let mh = Self.motionH
+    let rotation = locked { _previewRotation }
+    let quarterTurn = rotation % 180 == 90
+    let mw = quarterTurn ? Self.motionShort : Self.motionLong
+    let mh = quarterTurn ? Self.motionLong : Self.motionShort
+    // A change of shape (the iPad was turned) starts the motion history afresh inside the gate.
     var luma = [UInt8](repeating: 0, count: mw * mh)
     for j in 0..<mh {
       for i in 0..<mw {
-        // Portrait x runs along the buffer's height (reversed), portrait y along its width.
-        let px = (Double(i) + 0.5) * Double(h) / Double(mw)
-        let py = (Double(j) + 0.5) * Double(w) / Double(mh)
-        let bx = min(w - 2, max(0, Int(py)))
-        let by = min(h - 2, max(0, h - 1 - Int(px)))
+        let (sx, sy) = Orientation.storedPoint(u: (Double(i) + 0.5) / Double(mw), v: (Double(j) + 0.5) / Double(mh), rotation: rotation)
+        let bx = min(w - 2, max(0, Int(sx * Double(w))))
+        let by = min(h - 2, max(0, Int(sy * Double(h))))
         let o = by * stride + bx
         let sum = Int(y[o]) + Int(y[o + 1]) + Int(y[o + stride]) + Int(y[o + stride + 1])
         luma[j * mw + i] = UInt8(sum / 4)
@@ -683,14 +698,19 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     let url = (clip.forPeer ? peerDir : clipsDir).appendingPathComponent("\(clip.id).mp4")
     Task {
       do {
-        let written = try await ClipExporter.export(chunks: chunks, window: window, to: url, thumbnail: !clip.forPeer)
+        let written = try await ClipExporter.export(
+          chunks: chunks, window: window, to: url, transform: Orientation.transform(for: clip.rotation), thumbnail: !clip.forPeer
+        )
         if clip.forPeer {
+          let size = self.uprightSize(rotation: clip.rotation)
           self.peers.sendClip(
             id: clip.id,
             file: written.url,
             fps: clip.fps,
             durationMs: written.duration * 1000,
-            anchorOffsetMs: written.anchorOffset * 1000
+            anchorOffsetMs: written.anchorOffset * 1000,
+            width: size.width,
+            height: size.height
           )
         } else {
           self.clipSaved(written, clip: clip)
@@ -712,12 +732,21 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
   }
 
+  /// The active format's size as a clip turned by `rotation` is shown (any thread).
+  private func uprightSize(rotation: Int) -> (width: Int, height: Int) {
+    let format = locked { _format }
+    let width = format?["width"] as? Int ?? 0
+    let height = format?["height"] as? Int ?? 0
+    return Orientation.uprightSize(width: width, height: height, rotation: rotation)
+  }
+
   private func clipSaved(_ written: WrittenClip, clip: PendingClip) {
     // The wrist swing that set this clip off (sound + wrist, or a practice swing) knows its tempo.
     var tempo: WristTempo?
     if clip.source == .impact || clip.source == .wrist, let anchorUs = PeerProtocol.micros(fromSeconds: clip.window.anchor) {
       tempo = tempos.near(anchorUs)
     }
+    let size = uprightSize(rotation: clip.rotation)
     let info: [String: Any?] = [
       "id": clip.id,
       "uri": written.url.absoluteString,
@@ -727,6 +756,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       "impactOffsetMs": written.impactOffset.map { $0 * 1000 },
       "anchorOffsetMs": written.anchorOffset * 1000,
       "source": clip.source.rawValue,
+      "width": size.width,
+      "height": size.height,
+      "orientation": clip.rotation,
       "backswingMs": tempo?.backswingMs,
       "downswingMs": tempo?.downswingMs,
     ]

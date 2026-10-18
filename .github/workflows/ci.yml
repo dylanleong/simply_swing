@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  check:
+  js:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,4 +16,25 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test -- --ci
+      - run: npx jest --ci
+
+  # Native unit tests: the capture module (through the prebuilt app project) and the Wear OS app.
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - run: npm ci
+      - run: npx expo prebuild -p android --no-install
+      - run: ./gradlew :swing-capture:testReleaseUnitTest
+        working-directory: android
+      - run: ./gradlew testReleaseUnitTest
+        working-directory: wear

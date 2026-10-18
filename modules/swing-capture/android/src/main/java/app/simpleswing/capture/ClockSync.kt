@@ -32,8 +32,6 @@ class ClockSync(private val maxSamples: Int = 20) {
     return true
   }
 
-  fun clear() = samples.clear()
-
   private val best: Sample?
     get() = samples.minByOrNull { it.rttUs }
 
@@ -44,12 +42,6 @@ class ClockSync(private val maxSamples: Int = 20) {
   /** Worst-case error of [offsetUs]: half the best round trip. */
   val errorUs: Long?
     get() = best?.let { it.rttUs / 2 }
-
-  /** A time on our clock expressed on the peer's clock. */
-  fun toPeer(localUs: Long): Long? = offsetUs?.let { localUs + it }
-
-  /** A time on the peer's clock expressed on ours. */
-  fun toLocal(peerUs: Long): Long? = offsetUs?.let { peerUs - it }
 
   companion object {
     /** Round trips longer than this are a stalled link, not a measurement. */

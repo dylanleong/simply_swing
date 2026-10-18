@@ -36,17 +36,21 @@ The order matters: Play's 14-day closed test is the long pole, so the developer 
 _Items marked "in progress" appeared as uncommitted changes from other engineers on 2026-10-16. Confirm that they're
 committed and present in the release build._
 
-- [ ] **Version numbers (in progress).**
+- [x] **Version numbers.**
   - `app.json` `version` is now `1.0.0`, with `ios.buildNumber` "1" and `android.versionCode` 1.
   - The Wear `versionName` is now `1.0.0`. Keep its `versionCode` (1000001) above any phone code.
   - **Pick one source of truth:** `eas.json` uses `appVersionSource: remote` + `autoIncrement`, which ignores the `app.json` numbers on EAS builds.
-- [ ] **`READ_MEDIA_*` blocked (in progress).** `app.json` `blockedPermissions` now lists VIDEO, VISUAL_USER_SELECTED, IMAGES and AUDIO. Re-test Save to Photos on Android 13+ and on Android 10–12.
-- [ ] **Android backup rules (in progress).** `plugins/with-android-policy.js` excludes `files/swings/` from cloud backup and device transfer, which the privacy policy now describes.
+- [x] **`READ_MEDIA_*` blocked.** `app.json` `blockedPermissions` lists VIDEO, VISUAL_USER_SELECTED, IMAGES and AUDIO. Still re-test Save to Photos on Android 13+ and on Android 10–12 (section C).
+- [x] **Android backup rules.** `plugins/with-android-policy.js` excludes `files/swings/` from cloud backup and device transfer, which the privacy policy now describes.
   - Notes and tags in that folder are excluded too.
   - Verify with `bmgr` after `prebuild --clean`.
-- [ ] **Large screens (in progress).** The same plugin opts out of Android 16's ignore-orientation behaviour on screens 600 dp and wider. Check on a tablet or foldable emulator, and note that Android 17 targets lose the opt-out.
+- [x] **Large screens (Android 17 ready).** No orientation opt-out any more: phones lock to portrait at runtime, screens 600 dp and wider rotate freely with landscape layouts and upright landscape clips (STATUS.md "Large screens and rotation"). Still to check on a tablet or foldable emulator, and on the iPad.
 - [ ] **Pairing code** shipped on Android **and** iOS. The privacy policy and support page describe it.
-- [ ] **iOS privacy manifest.** After `npx expo prebuild -p ios`, inspect `PrivacyInfo.xcprivacy`. Add `ios.privacyManifests` to `app.json` if the Swift module uses required-reason APIs (file timestamps, `UserDefaults`, disk space).
+- [x] **iOS privacy manifest added** (`ios.privacyManifests` in `app.json`: file timestamps, `UserDefaults`, disk space). After `npx expo prebuild -p ios`, confirm the aggregated `PrivacyInfo.xcprivacy` carries it.
+- [x] **16 KB page size verified.** The release build's native libraries are 16 KB-aligned (Play requires it for apps targeting Android 15+; checked with `check_elf_alignment`-style inspection of the AAB).
+- [x] **Xcode 26.4+ requirement.** App Store uploads need Xcode 26.4+ / the iOS 26 SDK; the EAS image is pinned to one that has it (see B.6).
+- [x] **`ACTIVITY_RECOGNITION` blocked** on the phone (`app.json` `blockedPermissions`), matching the watch, which never declared it.
+- [x] **iOS HealthKit entitlement + purpose strings added** for the Apple Watch golf workout (`NSHealthShareUsageDescription`, `NSHealthUpdateUsageDescription`; nothing is written to Health).
 - [ ] **Bundle id decision** (see B.4) before any upload.
 - [ ] **Wear notification permission (check).** Android 13+ hides FGS notifications without `POST_NOTIFICATIONS`. The service still runs, but check whether the watch should request it so users can see the sensing notice.
 - [ ] **Paywall:** not for 1.0 unless pricing is decided. If added later, see the "If purchases ship" sections in the other two files.
@@ -139,7 +143,7 @@ npx eas-cli@latest submit -p ios --latest                 # uploads to App Store
 ```
 
 - **Compile errors are expected.** The Swift has **never been compiled** (`STATUS.md`), so expect several EAS round trips of 10–20 min each. A Mac (or a rented cloud Mac) makes this much faster.
-- **Xcode 26 is required.** Since 28 Apr 2026, App Store uploads must be built with Xcode 26+ / the iOS 26 SDK. EAS's default image for SDK 57 should satisfy this (**verify** the image in the build log).
+- **Xcode 26.4+ is required.** App Store uploads must be built with Xcode 26.4+ / the iOS 26 SDK. EAS's default image for SDK 57 should satisfy this (**verify** the image in the build log).
 - **The first device test still needs a real device.** The camera, microphone and high-fps formats can't be tested in the Simulator.
   - Without a Mac: install the build through **TestFlight internal testing** on your partner's iPhone and your iPad.
   - Or use an EAS `development`/`preview` build installed via `eas device:create` + link.

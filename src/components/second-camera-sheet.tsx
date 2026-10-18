@@ -49,6 +49,11 @@ export function SecondCameraSheet({
   const sync = formatSync(status?.syncMs ?? null);
   const asking = !connected && codeRequest != null;
   const codeReady = isPairingCode(code);
+  // One green per card: Connect (code or address) is the main action until the link is up; then Done is.
+  const doneStyle = connected
+    ? { backgroundColor: theme.accent }
+    : { backgroundColor: theme.backgroundElement };
+  const doneTextStyle = connected ? styles.buttonText : { fontWeight: '700' as const };
 
   const pick = (idOrAddress: string, name?: string) => {
     setCode('');
@@ -220,8 +225,8 @@ export function SecondCameraSheet({
             <Pressable
               accessibilityRole="button"
               onPress={onClose}
-              style={({ pressed }) => [styles.button, { backgroundColor: theme.accent, opacity: pressed ? 0.7 : 1 }]}>
-              <ThemedText style={styles.buttonText}>Done</ThemedText>
+              style={({ pressed }) => [styles.button, doneStyle, { opacity: pressed ? 0.7 : 1 }]}>
+              <ThemedText style={doneTextStyle}>Done</ThemedText>
             </Pressable>
           </View>
         </View>

@@ -19,8 +19,9 @@ import kotlin.math.tan
  *
  * The reported time is the peak sample inside the hop, on the caller's clock.
  *
- * Phase 2 adds the motion gate (golfer-box motion in the preceding 1.5 s) to reject neighbouring
- * bays; this class stays audio-only and is shared verbatim in spirit with the iOS implementation.
+ * This class is audio-only. The engine then rejects neighbouring bays with the golfer-box motion
+ * gate (MotionGate: movement in the preceding 1.5 s) and, with the watch sensing, TriggerFusion.
+ * Mirrored by the iOS implementation.
  */
 class ImpactDetector(
   private val sampleRate: Int,

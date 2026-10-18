@@ -24,8 +24,8 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         heading: 'Face on',
         body:
-          'Square to your chest, about 3 m away, level with the ball or your sternum, at hand to chest ' +
-          'height. This view shows sway, head movement, weight shift and the club at impact.',
+          'Square to your chest, about 3 m away, at chest height. This view shows sway, head movement, ' +
+          'weight shift and the club at impact.',
       },
       {
         heading: 'Level and framing',
@@ -115,9 +115,9 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         heading: 'Favourites and compare',
         body:
-          'Star your best swing in review → Tag. Then open any other swing and choose Share → Compare ' +
-          'with…: the two play side by side, lined up on impact. Step through the top of the backswing ' +
-          'and impact frame by frame. Favourites are never auto-deleted.',
+          'Star your best swing: tap the star at the top of a swing. Then open any other swing and tap ⋯ → ' +
+          'Compare with another swing: the two play side by side, lined up on impact. Step through the ' +
+          'top of the backswing and impact frame by frame. Favourites are never auto-deleted.',
       },
     ],
   },
@@ -131,9 +131,9 @@ export const HELP_TOPICS: HelpTopic[] = [
         body:
           'Put both phones on the same Wi-Fi, or turn on one phone’s hotspot and join it from the other. ' +
           'On the second phone: Settings → Use this phone as the camera, and choose its view. It shows a ' +
-          '6-digit code. On your phone: tap + Cam on the Capture screen, pick it and type that code (only ' +
-          'the first time; your phone remembers it). Keep SimpleSwing open on both. Every swing you save ' +
-          'is filmed from both, and Save to Photos makes one side-by-side video.',
+          '6-digit code. On your phone: tap the camera icon at the top of Capture, pick it and type that ' +
+          'code (only the first time; your phone remembers it). Keep SimpleSwing open on both. Every ' +
+          'swing you save is filmed from both, and Save to Photos makes one side-by-side video.',
       },
       {
         heading: 'Apple Watch or Wear OS watch',
@@ -160,7 +160,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       {
         heading: 'My shot wasn’t saved',
         body:
-          'Check AUTO is on. Tap the status pill to open Levels: a shot needs movement in the golfer box ' +
+          'Check AUTO is on. Tap the Recording label at the top to open Levels: a shot needs movement in the golfer box ' +
           'just before it, and a sound loud enough. Make the box cover where you stand and swing. If ' +
           'strikes read too quiet, raise Settings → Impact sensitivity. Listen for the chime: a soft ' +
           'two-note sound means the swing was saved (turn it on in Settings → Sound when saved; it ' +
